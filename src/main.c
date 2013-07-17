@@ -331,10 +331,7 @@ int main() {
 		}
 
 		g_mutex_lock(&sender_control.lines_mutex);
-		GSList *lines = sender_control.lines;
-		lines = g_slist_prepend(lines, line);
-		// Give lines to the rails sender thread.
-		sender_control.lines = lines;
+		sender_control.lines = g_slist_prepend(sender_control.lines, line);
 		g_cond_signal(&sender_control.lines_cond);
 		g_mutex_unlock(&sender_control.lines_mutex);
 	}

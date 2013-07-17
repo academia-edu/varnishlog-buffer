@@ -1,5 +1,4 @@
 #define _GNU_SOURCE
-#define _ISOC11_SOURCE
 
 #include <sched.h>
 #include <unistd.h>
@@ -18,7 +17,8 @@
 
 #include <glib.h>
 
-#define SHUTDOWN_POLL_TIME_MS 50
+// Priority is arbitrary chosen, but should be lower than varnishlog's
+#define HIGH_THREAD_PRIORITY 9
 
 static struct {
 	pid_t *pid;
@@ -115,17 +115,29 @@ static bool high_priority_process( int prio, GError **err ) {
 	return true;
 }
 
-static bool high_priority_thread( int prio, GError **err ) {
+static bool set_thread_priority( pthread_t thread, int sched, int prio, GError **err ) {
 	struct sched_param param;
 	memset(&param, 0, sizeof(param));
 	param.sched_priority = prio;
-	// The type of the return value of pthread_setschedparam is actually undocumented,
-	// so it may not be safe to assign it to errno.
-	if( (errno = pthread_setschedparam(pthread_self(), SCHED_FIFO, &param)) != 0 ) {
+	if( (errno = pthread_setschedparam(thread, sched, &param)) != 0 ) {
 		g_set_error_errno(err);
 		return false;
 	}
 	return true;
+}
+
+static bool high_priority_thread( int prio, GError **err ) {
+	return set_thread_priority(pthread_self(), SCHED_FIFO, prio, err);
+}
+
+static bool swap_thread_priority( pthread_t thread, int sched, int prio, int *osched, int *oprio, GError **err ) {
+	struct sched_param param;
+	if( (errno = pthread_getschedparam(thread, osched, &param)) != 0 ) {
+		g_set_error_errno(err);
+		return false;
+	}
+	*oprio = param.sched_priority;
+	return set_thread_priority(thread, sched, prio, err);
 }
 
 static bool shutdown_varnishlog( int *stat, GError **err ) {
@@ -290,8 +302,16 @@ static void free_string( String *line ) {
 	g_slice_free(String, line);
 }
 
-static void *rails_sender_main( SenderControl *control ) {
+static GError *rails_sender_main( SenderControl *control ) {
+	pthread_t thread = pthread_self();
+	GError *err = NULL;
+
 	while( !control->shutdown ) {
+		// Temporarily raise our priority for the duration of the critical section.
+		int osched, oprio;
+		if( !swap_thread_priority(thread, SCHED_FIFO, HIGH_THREAD_PRIORITY, &osched, &oprio, &err) )
+			return err;
+
 		g_mutex_lock(&control->lines_mutex);
 		while( control->lines == NULL && !control->shutdown )
 			g_cond_wait(&control->lines_cond, &control->lines_mutex);
@@ -301,11 +321,15 @@ static void *rails_sender_main( SenderControl *control ) {
 		control->lines = NULL;
 		g_mutex_unlock(&control->lines_mutex);
 
+		if( !set_thread_priority(thread, osched, oprio, &err) )
+			return err;
+
 		lines = g_slist_reverse(lines);
 
 		g_slist_foreach(lines, (GFunc) send_log_entry_to_rails, NULL);
 		g_slist_free_full(lines, (GDestroyNotify) free_string);
 	}
+
 	return NULL;
 }
 
@@ -323,8 +347,7 @@ int main() {
 	g_mutex_init(&sender_control.lines_mutex);
 	g_cond_init(&sender_control.lines_cond);
 
-	// Priority is arbitrary chosen, but should be lower than varnishlog's
-	if( !high_priority_thread(9, &err) ) goto out_high_priority_thread;
+	if( !high_priority_thread(HIGH_THREAD_PRIORITY, &err) ) goto out_high_priority_thread;
 
 	while( !shutdown ) {
 		String *line = g_slice_new(String);
@@ -351,13 +374,14 @@ int main() {
 	g_cond_broadcast(&sender_control.lines_cond);
 	g_mutex_unlock(&sender_control.lines_mutex);
 
-	g_thread_join(sender_control.thread);
-
-	g_mutex_clear(&sender_control.lines_mutex);
-	g_cond_clear(&sender_control.lines_cond);
+	err = g_thread_join(sender_control.thread);
+	if( err != NULL ) goto out_g_thread_join;
 
 	int stat;
 	if( !shutdown_varnishlog(&stat, &err) ) goto out_shutdown_varnishlog;
+
+	g_mutex_clear(&sender_control.lines_mutex);
+	g_cond_clear(&sender_control.lines_cond);
 
 	if( !WIFSIGNALED(stat) || WTERMSIG(stat) != SIGINT )
 		return stat;
@@ -365,6 +389,7 @@ int main() {
 	return EXIT_SUCCESS;
 
 out_shutdown_varnishlog:
+out_g_thread_join:
 out_read_varnish_log_entry:
 out_high_priority_thread:
 	sender_control.shutdown = true;
@@ -376,6 +401,9 @@ out_high_priority_thread:
 	}
 	g_cond_broadcast(&sender_control.lines_cond);
 	g_mutex_unlock(&sender_control.lines_mutex);
+
+	g_mutex_clear(&sender_control.lines_mutex);
+	g_cond_clear(&sender_control.lines_cond);
 out_register_signal_handlers:
 	shutdown_varnishlog(NULL, NULL);
 out_start_varnishlog:

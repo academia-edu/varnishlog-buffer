@@ -14,8 +14,9 @@ TOPDIR := $(PWD)
 INCDIR := $(TOPDIR)/include
 SRCDIR := $(TOPDIR)/src
 
-CPPFLAGS := $(CPPFLAGS) -ggdb -fno-omit-frame-pointer -O0 -fno-optimize-sibling-calls
-CFLAGS := $(CFLAGS) -fPIC -Wall -Wextra -Werror -ferror-limit=3 -Werror -std=gnu11
+#CPPFLAGS := $(CPPFLAGS) -ggdb -fno-omit-frame-pointer -O0 -fno-optimize-sibling-calls
+CPPFLAGS := $(CPPFLAGS) -O3
+CFLAGS := $(CFLAGS) -fPIC -Wall -Wextra -Werror -ferror-limit=3 -Werror -std=gnu99 -pthread
 CXXFLAGS := $(CXXFLAGS) -std=gnu++11 -Wall -Wextra -ferror-limit=3 -Werror
 
 GTHREAD_CPPFLAGS ?= $(shell $(PKG_CONFIG) --cflags gthread-2.0)

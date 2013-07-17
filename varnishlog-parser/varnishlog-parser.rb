@@ -40,8 +40,12 @@ class Session
     md = /^\s*([^:]+):\s*(.*)$/.match(data)
     raise InvalidParseError, data unless md
     header_name, header_value = md[1], md[2]
-    headers = (@session_data['headers'] ||= {})
-    headers[header_name] = header_value
+    if header_name == 'Cookie'
+      @session_data['cookies'] = Hash[*header_value.split(/; ?/).map!{|c| c.split('=', 2).tap{|a| a << nil if a.length == 1}}.flatten!]
+    else
+      headers = (@session_data['headers'] ||= {})
+      headers[header_name] = header_value
+    end
   end
 
   def add_data(tag, payload)

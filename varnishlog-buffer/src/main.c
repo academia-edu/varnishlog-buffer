@@ -38,7 +38,6 @@ static bool register_signal_handlers( GError **err ) {
 	struct sigaction act;
 	memset(&act, 0, sizeof(act));
 	act.sa_handler = (void (*)( int )) shutdown_sigaction;
-	//act.sa_flags = SA_RESTART;
 
 	static const int shutdown_signals[] = {
 		SIGHUP,

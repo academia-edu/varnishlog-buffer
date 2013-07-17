@@ -37,7 +37,7 @@ class Session
   end
 
   on_tag :RxHeader do |data|
-    md = /^\s*([^:]+):\s*(.+)$/.match(data)
+    md = /^\s*([^:]+):\s*(.*)$/.match(data)
     raise InvalidParseError, data unless md
     header_name, header_value = md[1], md[2]
     headers = (@session_data[:headers] ||= {})

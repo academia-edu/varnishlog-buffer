@@ -25,7 +25,6 @@ class Session
 
   def initialize
     @session_data = {}
-    @raw_data = []
     @closed = false
   end
 
@@ -46,7 +45,6 @@ class Session
   end
 
   def add_data(tag, payload)
-    @raw_data << "#{tag} #{payload}"
     instance_exec(payload, &tag_handlers[tag]) if tag_handlers.has_key?(tag)
   end
 
@@ -56,7 +54,7 @@ class Session
     @session_data['ip'] = md[1]
   end
 
-  on_tag :SessionClose do |*|
+  on_tag :StatSess do |*|
     @closed = true
   end
 
@@ -65,6 +63,8 @@ class Session
   on_tag_save :RxRequest, :method
 
   on_tag_save :TxStatus, :status
+
+  on_tag_save :SessionClose, :close_reason
 end
 
 $sessions = {}
@@ -81,6 +81,5 @@ ARGF.each do |line|
     $finished_sessions << session
     $sessions.delete(session_id)
     puts session.data
-    puts session.instance_variable_get(:@raw_data).join("\n")
   end
 end

@@ -98,7 +98,6 @@ static void g_die( GError *err ) {
 }
 
 static bool high_priority( GError **err ) {
-	return true;
 	struct sched_param param = {0};
 	param.sched_priority = 10; // Arbitrarily chosen. Priorities range from 1 - 99. See chrt -m
 	if( sched_setscheduler(getpid(), SCHED_FIFO, &param) == -1 ) {

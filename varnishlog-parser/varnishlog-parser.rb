@@ -38,7 +38,7 @@ class Session
 
   on_tag :RxHeader do |data|
     md = /^\s*([^:]+):\s*(.+)$/.match(data)
-    raise InvalidParseError unless md
+    raise InvalidParseError, data unless md
     header_name, header_value = md[1], md[2]
     headers = (@session_data[:headers] ||= {})
     headers[header_name] = header_value
@@ -50,7 +50,7 @@ class Session
 
   on_tag :SessionOpen do |data|
     md = /^((?:\d+\.){3}\d+) \d+ (?:(?:\d+\.){3}\d+)?:\d+$/.match(data)
-    raise InvalidParseError unless md
+    raise InvalidParseError, data unless md
     @session_data['ip'] = md[1]
   end
 
@@ -70,7 +70,7 @@ $finished_sessions = []
 
 ARGF.each do |line|
   md = /^\s*(\d+)\s+([^\s]+)\s+c\s+(.+)$/.match(line)
-  raise InvalidParseError unless md
+  raise InvalidParseError, line unless md
   session_id, tag, payload = md[1].to_i, md[2].to_sym, md[3]
   $sessions[session_id] = Session.new unless $sessions.has_key?(session_id)
   session = $sessions[session_id]

@@ -291,12 +291,10 @@ static void free_string( String *line ) {
 }
 
 static void *rails_sender_main( SenderControl *control ) {
-	while( !shutdown ) {
+	while( !control->shutdown ) {
 		g_mutex_lock(&control->lines_mutex);
-		while( control->lines == NULL && !shutdown ) {
-			gint64 end_time = g_get_monotonic_time() + SHUTDOWN_POLL_TIME_MS * G_TIME_SPAN_MILLISECOND;
-			g_cond_wait_until(&control->lines_cond, &control->lines_mutex, end_time);
-		}
+		while( control->lines == NULL && !control->shutdown )
+			g_cond_wait(&control->lines_cond, &control->lines_mutex);
 
 		// Keep in mind lines may be NULL
 		GSList *lines = control->lines;
@@ -348,7 +346,9 @@ int main() {
 	sender_control.shutdown = true;
 
 	// Wake up the other thread
+	g_mutex_lock(&sender_control.lines_mutex);
 	g_cond_broadcast(&sender_control.lines_cond);
+	g_mutex_unlock(&sender_control.lines_mutex);
 
 	g_thread_join(sender_control.thread);
 

@@ -14,7 +14,6 @@
 #include "varnishlog.h"
 #include "die.h"
 #include "priority.h"
-#include "shutdown.h"
 #include "errors.h"
 
 struct Varnishlog {

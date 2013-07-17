@@ -1,19 +1,11 @@
 #define _GNU_SOURCE
 
-#include <sched.h>
-#include <unistd.h>
-#include <stdarg.h>
-#include <stdio.h>
-#include <stddef.h>
-#include <stdbool.h>
-#include <string.h>
-#include <errno.h>
-#include <sys/types.h>
 #include <signal.h>
+#include <string.h>
 #include <stdlib.h>
-#include <stdint.h>
-#include <sys/wait.h>
-#include <pthread.h>
+#include <stdio.h>
+#include <stdbool.h>
+#include <errno.h>
 
 #include <glib.h>
 
@@ -21,19 +13,14 @@
 #include "glib_extra.h"
 #include "errors.h"
 #include "die.h"
-#include "shutdown.h"
 #include "varnishlog.h"
 #include "priority.h"
+#include "strings.h"
 
 // Priority is arbitrary chosen, but should be lower than varnishlog's
 #define HIGH_THREAD_PRIORITY 9
 
-volatile bool shutdown = false;
-
-typedef struct String {
-	char *bytes;
-	size_t len;
-} String;
+static volatile bool shutdown = false;
 
 typedef struct SenderControl {
 	GThread *thread;
@@ -77,11 +64,6 @@ static void send_log_entry_to_rails( String *line ) {
 	printf("%s\n", line->bytes);
 }
 
-static void free_string( String *line ) {
-	free(line->bytes);
-	g_slice_free(String, line);
-}
-
 static GError *rails_sender_main( SenderControl *control ) {
 	pthread_t thread = pthread_self();
 	GError *err = NULL;
@@ -107,7 +89,7 @@ static GError *rails_sender_main( SenderControl *control ) {
 		lines = g_slist_reverse(lines);
 
 		g_slist_foreach(lines, (GFunc) send_log_entry_to_rails, NULL);
-		g_slist_free_full(lines, (GDestroyNotify) free_string);
+		g_slist_free_full(lines, (GDestroyNotify) string_free);
 	}
 
 	return NULL;
@@ -131,11 +113,11 @@ int main() {
 	if( !high_priority_thread(HIGH_THREAD_PRIORITY, &err) ) goto out_high_priority_thread;
 
 	while( !shutdown ) {
-		String *line = g_slice_new(String);
-		memset(line, 0, sizeof(*line));
+		char *line_bytes = NULL;
+		size_t line_len;
 
 restart_after_eintr:
-		if( !read_varnishlog_entry(v, &line->bytes, &line->len, &err) ) {
+		if( !read_varnishlog_entry(v, &line_bytes, &line_len, &err) ) {
 			if( shutdown ) {
 				g_clear_error(&err);
 				break;
@@ -146,6 +128,8 @@ restart_after_eintr:
 			}
 			goto out_read_varnishlog_entry;
 		}
+
+		String *line = string_new_malloced_with_len(line_bytes, line_len);
 
 		g_mutex_lock(&sender_control.lines_mutex);
 		sender_control.lines = g_slist_prepend(sender_control.lines, line);
@@ -182,7 +166,7 @@ out_high_priority_thread:
 
 	g_mutex_lock(&sender_control.lines_mutex);
 	if( sender_control.lines != NULL ) {
-		g_slist_free_full(sender_control.lines, (GDestroyNotify) free_string);
+		g_slist_free_full(sender_control.lines, (GDestroyNotify) string_free);
 		sender_control.lines = NULL;
 	}
 	g_cond_broadcast(&sender_control.lines_cond);

@@ -3,7 +3,7 @@
 src/all: src/academia-varnishlog.exe
 
 src/clean:
-	$(RM) $(SRC_OBJECTS) academia-varnishlig.exe
+	$(RM) $(SRC_OBJECTS) $(CURDIR)/academia-varnishlog.exe
 
 src/depclean:
 	$(RM) $(SRC_DEPS)

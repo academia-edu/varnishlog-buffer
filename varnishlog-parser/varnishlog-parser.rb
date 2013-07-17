@@ -40,7 +40,7 @@ class Session
     md = /^\s*([^:]+):\s*(.*)$/.match(data)
     raise InvalidParseError, data unless md
     header_name, header_value = md[1], md[2]
-    headers = (@session_data[:headers] ||= {})
+    headers = (@session_data['headers'] ||= {})
     headers[header_name] = header_value
   end
 

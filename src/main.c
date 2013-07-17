@@ -62,6 +62,7 @@ static bool register_signal_handlers( GError **err ) {
 static void send_log_entry_to_rails( String *line ) {
 	// TODO: Run this in a low priority process.
 	printf("%s\n", line->bytes);
+	fflush(stdout);
 }
 
 static GError *rails_sender_main( SenderControl *control ) {

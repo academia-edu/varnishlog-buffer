@@ -18,6 +18,8 @@
 
 #include <glib.h>
 
+#define SHUTDOWN_POLL_TIME_MS 50
+
 static struct {
 	pid_t *pid;
 	FILE *stdout;
@@ -292,7 +294,8 @@ static void *rails_sender_main( SenderControl *control ) {
 	while( !shutdown ) {
 		g_mutex_lock(&control->lines_mutex);
 		while( control->lines == NULL && !shutdown ) {
-			g_cond_wait(&control->lines_cond, &control->lines_mutex);
+			gint64 end_time = g_get_monotonic_time() + SHUTDOWN_POLL_TIME_MS * G_TIME_SPAN_MILLISECOND;
+			g_cond_wait_until(&control->lines_cond, &control->lines_mutex, end_time);
 		}
 
 		// Keep in mind lines may be NULL

@@ -134,21 +134,18 @@ int main() {
 		String *line = g_slice_new(String);
 		memset(line, 0, sizeof(*line));
 
-		// Sorry for the confusing loop
-		do {
-			if( !read_varnishlog_entry(v, &line->bytes, &line->len, &err) ) {
-				if( shutdown ) {
-					g_clear_error(&err);
-					break;
-				} else if( err->domain == ACADEMIA_VARNISHLOG_ERRNO_QUARK && err->code == EINTR ) {
-					// Retry if the syscall was interrupted.
-					g_clear_error(&err);
-					continue;
-				}
-				goto out_read_varnishlog_entry;
+restart_after_eintr:
+		if( !read_varnishlog_entry(v, &line->bytes, &line->len, &err) ) {
+			if( shutdown ) {
+				g_clear_error(&err);
+				break;
+			} else if( err->domain == ACADEMIA_VARNISHLOG_ERRNO_QUARK && err->code == EINTR ) {
+				// Retry if the syscall was interrupted.
+				g_clear_error(&err);
+				goto restart_after_eintr;
 			}
-			break;
-		} while( true );
+			goto out_read_varnishlog_entry;
+		}
 
 		g_mutex_lock(&sender_control.lines_mutex);
 		sender_control.lines = g_slist_prepend(sender_control.lines, line);

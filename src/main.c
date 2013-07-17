@@ -317,7 +317,8 @@ int main() {
 
 	SenderControl sender_control = {
 		.thread = g_thread_new("Rails Sender", (GThreadFunc) rails_sender_main, &sender_control),
-		.lines = NULL
+		.lines = NULL,
+		.shutdown = false
 	};
 	g_mutex_init(&sender_control.lines_mutex);
 	g_cond_init(&sender_control.lines_cond);

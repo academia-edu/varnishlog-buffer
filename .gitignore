@@ -1,3 +1,4 @@
 *.exe
 *.d
 *.o
+config.mk

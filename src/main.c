@@ -99,17 +99,23 @@ static void g_die( GError *err ) {
 }
 
 static bool high_priority_process( int prio, GError **err ) {
+#ifdef __linux__
 	struct sched_param param = {0};
 	param.sched_priority = prio;
 	if( sched_setscheduler(getpid(), SCHED_FIFO, &param) == -1 ) {
 		g_set_error_errno(err);
 		return false;
 	}
+#else
+#warning Cannot create SCHED_FIFO processes on non-linux platforms.
+	(void) prio, (void) err;
+#endif
 	return true;
 }
 
 static bool high_priority_thread( int prio, GError **err ) {
-	struct sched_param param = {0};
+	struct sched_param param;
+	memset(&param, 0, sizeof(param));
 	param.sched_priority = prio;
 	// The type of the return value of pthread_setschedparam is actually undocumented,
 	// so it may not be safe to assign it to errno.
@@ -121,22 +127,20 @@ static bool high_priority_thread( int prio, GError **err ) {
 }
 
 static bool shutdown_varnishlog( int *stat, GError **err ) {
+	g_return_val_if_fail(varnishlog.pid != NULL, true);
+
 	errno = 0;
-	if( varnishlog.pid != NULL ) {
-		if( kill(*varnishlog.pid, SIGINT) == -1 ) {
-			if( errno != ESRCH ) {
-				g_set_error_errno(err);
-				return false;
-			}
-		}
-	}
-	if( varnishlog.stdout != NULL ) {
-		if( fclose(varnishlog.stdout) != 0 ) {
+	if( kill(*varnishlog.pid, SIGINT) == -1 ) {
+		if( errno != ESRCH ) {
 			g_set_error_errno(err);
 			return false;
 		}
-		varnishlog.stdout = NULL;
 	}
+	if( fclose(varnishlog.stdout) != 0 ) {
+		g_set_error_errno(err);
+		return false;
+	}
+	varnishlog.stdout = NULL;
 	if( waitpid(*varnishlog.pid, stat, 0) == -1 ) {
 		g_set_error_errno(err);
 		return false;
@@ -219,7 +223,7 @@ static bool register_signal_handlers( GError **err ) {
 	struct sigaction act;
 	memset(&act, 0, sizeof(act));
 	act.sa_handler = (void (*)( int )) shutdown_sigaction;
-	act.sa_flags = SA_RESTART;
+	//act.sa_flags = SA_RESTART;
 
 	static const int shutdown_signals[] = {
 		SIGHUP,
@@ -244,33 +248,31 @@ static bool read_varnish_log_entry( char **line, size_t *len, GError **err ) {
 	size_t allocation;
 	ssize_t slen;
 	errno = 0;
-	if( (slen = getline(line, &allocation, varnishlog.stdout)) == -1 ) {
-		if( errno != 0 ) {
-			int saved_errno = errno;
-			g_set_error(
-				err,
-				ACADEMIA_VARNISHLOG_ERRNO_QUARK,
-				saved_errno,
-				"%s",
-				strerror(saved_errno)
-			);
-		} else if( feof(varnishlog.stdout) ) {
-			g_set_error_literal(
-				err,
-				ACADEMIA_VARNISHLOG_QUARK,
-				ACADEMIA_VARNISHLOG_ERROR_EOF,
-				"End of file found on varnishlog pipe"
-			);
-		} else {
-			g_set_error_literal(
-				err,
-				ACADEMIA_VARNISHLOG_QUARK,
-				ACADEMIA_VARNISHLOG_ERROR_UNSPEC,
-				"Unspecified error reading varnishlog pipe"
-			);
+	do {
+		slen = getline(line, &allocation, varnishlog.stdout);
+		if( slen == -1 ) {
+			if( errno != 0 ) {
+				if( errno == EINTR && !shutdown )
+					continue;
+				g_set_error_errno(err);
+			} else if( feof(varnishlog.stdout) ) {
+				g_set_error_literal(
+					err,
+					ACADEMIA_VARNISHLOG_QUARK,
+					ACADEMIA_VARNISHLOG_ERROR_EOF,
+					"End of file found on varnishlog pipe"
+				);
+			} else {
+				g_set_error_literal(
+					err,
+					ACADEMIA_VARNISHLOG_QUARK,
+					ACADEMIA_VARNISHLOG_ERROR_UNSPEC,
+					"Unspecified error reading varnishlog pipe"
+				);
+			}
+			return false;
 		}
-		return false;
-	}
+	} while( slen == -1 );
 	*len = slen;
 	if( (*line)[slen - 1] == '\n' ) (*line)[slen - 1] = '\0';
 	return true;
@@ -289,8 +291,9 @@ static void free_string( String *line ) {
 static void *rails_sender_main( SenderControl *control ) {
 	while( !shutdown ) {
 		g_mutex_lock(&control->lines_mutex);
-		while( control->lines == NULL && !shutdown )
+		while( control->lines == NULL && !shutdown ) {
 			g_cond_wait(&control->lines_cond, &control->lines_mutex);
+		}
 
 		// Keep in mind lines may be NULL
 		GSList *lines = control->lines;
@@ -326,7 +329,10 @@ int main() {
 		memset(line, 0, sizeof(*line));
 
 		if( !read_varnish_log_entry(&line->bytes, &line->len, &err) ) {
-			if( shutdown ) break;
+			if( shutdown ) {
+				g_clear_error(&err);
+				break;
+			}
 			goto out_read_varnish_log_entry;
 		}
 
@@ -339,16 +345,20 @@ int main() {
 	sender_control.shutdown = true;
 
 	// Wake up the other thread
-	g_mutex_lock(&sender_control.lines_mutex);
-	g_cond_signal(&sender_control.lines_cond);
-	g_mutex_unlock(&sender_control.lines_mutex);
+	g_cond_broadcast(&sender_control.lines_cond);
 
 	g_thread_join(sender_control.thread);
+
+	g_mutex_clear(&sender_control.lines_mutex);
+	g_cond_clear(&sender_control.lines_cond);
 
 	int stat;
 	if( !shutdown_varnishlog(&stat, &err) ) goto out_shutdown_varnishlog;
 
-	return stat;
+	if( !WIFSIGNALED(stat) || WTERMSIG(stat) != SIGINT )
+		return stat;
+
+	return EXIT_SUCCESS;
 
 out_shutdown_varnishlog:
 out_read_varnish_log_entry:
@@ -360,7 +370,7 @@ out_high_priority_thread:
 		g_slist_free_full(sender_control.lines, (GDestroyNotify) free_string);
 		sender_control.lines = NULL;
 	}
-	g_cond_signal(&sender_control.lines_cond);
+	g_cond_broadcast(&sender_control.lines_cond);
 	g_mutex_unlock(&sender_control.lines_mutex);
 out_register_signal_handlers:
 	shutdown_varnishlog(NULL, NULL);

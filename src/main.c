@@ -17,15 +17,18 @@
 
 #include <glib.h>
 
+#include "common.h"
+#include "glib_extra.h"
+#include "errors.h"
+#include "die.h"
+#include "shutdown.h"
+#include "varnishlog.h"
+#include "priority.h"
+
 // Priority is arbitrary chosen, but should be lower than varnishlog's
 #define HIGH_THREAD_PRIORITY 9
 
-static struct {
-	pid_t *pid;
-	FILE *stdout;
-} varnishlog;
-
-static volatile bool shutdown = false;
+volatile bool shutdown = false;
 
 typedef struct String {
 	char *bytes;
@@ -40,197 +43,8 @@ typedef struct SenderControl {
 	volatile bool shutdown;
 } SenderControl;
 
-typedef enum AcademiaVarnishLogError {
-	ACADEMIA_VARNISHLOG_ERROR_EOF,
-	ACADEMIA_VARNISHLOG_ERROR_UNSPEC
-} AcademiaVarnishLogError;
-
-#define ACADEMIA_VARNISHLOG_QUARK academia_varnishlog_quark()
-#define ACADEMIA_VARNISHLOG_ERRNO_QUARK academia_varnishlog_errno_quark()
-
-static GQuark academia_varnishlog_quark() {
-	return g_quark_from_static_string("academia-varnishlog-quark");
-}
-
-static GQuark academia_varnishlog_errno_quark() {
-	return g_quark_from_static_string("academia-varnishlog-errno-quark");
-}
-
-static void g_set_error_errno( GError **err ) {
-	int saved_errno = errno;
-	g_set_error(
-		err,
-		ACADEMIA_VARNISHLOG_ERRNO_QUARK,
-		saved_errno,
-		"%s",
-		strerror(saved_errno)
-	);
-}
-
-__attribute__((noreturn))
-static void _die_v( const char *fmt, va_list ap ) {
-	fprintf(stderr, "%ju: ", (uintmax_t) getpid());
-	vfprintf(stderr, fmt, ap);
-	fprintf(stderr, "\n");
-	exit(EXIT_FAILURE);
-	g_assert(false); // Impossible
-}
-
-__attribute__((noreturn))
-static void _die( const char *fmt, ... ) {
-	va_list ap;
-	va_start(ap, fmt);
-	_die_v(fmt, ap);
-	g_assert(false); // Impossible
-}
-
-#define dief(fmt, ...) (_die((fmt), ## __VA_ARGS__))
-
-__attribute__((noreturn))
-static void die( const char *msg ) {
-	_die("%s", msg);
-}
-
-__attribute__((noreturn))
-static void g_die( GError *err ) {
-	if( err != NULL ) {
-		die(err->message);
-	} else {
-		die("Unspecified error");
-	}
-}
-
-static bool high_priority_process( int prio, GError **err ) {
-#ifdef __linux__
-	struct sched_param param = {0};
-	param.sched_priority = prio;
-	if( sched_setscheduler(getpid(), SCHED_FIFO, &param) == -1 ) {
-		g_set_error_errno(err);
-		return false;
-	}
-#else
-#warning Cannot create SCHED_FIFO processes on non-linux platforms.
-	(void) prio, (void) err;
-#endif
-	return true;
-}
-
-static bool set_thread_priority( pthread_t thread, int sched, int prio, GError **err ) {
-	struct sched_param param;
-	memset(&param, 0, sizeof(param));
-	param.sched_priority = prio;
-	if( (errno = pthread_setschedparam(thread, sched, &param)) != 0 ) {
-		g_set_error_errno(err);
-		return false;
-	}
-	return true;
-}
-
-static bool high_priority_thread( int prio, GError **err ) {
-	return set_thread_priority(pthread_self(), SCHED_FIFO, prio, err);
-}
-
-static bool swap_thread_priority( pthread_t thread, int sched, int prio, int *osched, int *oprio, GError **err ) {
-	struct sched_param param;
-	if( (errno = pthread_getschedparam(thread, osched, &param)) != 0 ) {
-		g_set_error_errno(err);
-		return false;
-	}
-	*oprio = param.sched_priority;
-	return set_thread_priority(thread, sched, prio, err);
-}
-
-static bool shutdown_varnishlog( int *stat, GError **err ) {
-	g_return_val_if_fail(varnishlog.pid != NULL, true);
-
-	errno = 0;
-	if( kill(*varnishlog.pid, SIGINT) == -1 ) {
-		if( errno != ESRCH ) {
-			g_set_error_errno(err);
-			return false;
-		}
-	}
-	if( fclose(varnishlog.stdout) != 0 ) {
-		g_set_error_errno(err);
-		return false;
-	}
-	varnishlog.stdout = NULL;
-	if( waitpid(*varnishlog.pid, stat, 0) == -1 ) {
-		g_set_error_errno(err);
-		return false;
-	}
-	g_free(varnishlog.pid);
-	varnishlog.pid = NULL;
-	return true;
-}
-
 static void shutdown_sigaction() {
 	shutdown = true;
-}
-
-__attribute__((noreturn))
-static void start_varnishlog_child_noreturn( int pipes[2] ) {
-	// TODO: Have a way to communicate a GError to the parent
-	GError *err = NULL;
-
-	if( close(pipes[0]) == -1 ) die(strerror(errno));
-	if( close(1) == -1 ) die(strerror(errno));
-	if( dup2(pipes[1], 1) == -1 ) die(strerror(errno));
-	if( close(pipes[1]) == -1 ) die(strerror(errno));
-
-	// The priority is arbitrarily chosen. Priorities range from 1 - 99. See chrt -m
-	if( !high_priority_process(10, &err) ) g_die(err);
-
-	char *argv[] = {
-		"varnishlog",
-		"-cOu",
-		NULL
-	};
-
-	execvp(argv[0], argv);
-	die(strerror(errno));
-}
-
-static bool start_varnishlog( GError **err ) {
-	int pipes[2];
-	if( pipe(pipes) == -1 ) {
-		g_set_error_errno(err);
-		goto out_pipe;
-	}
-
-	pid_t pid = fork();
-	if( pid == -1 ) {
-		g_set_error_errno(err);
-		goto out_fork;
-	} else if( pid == 0 ) {
-		start_varnishlog_child_noreturn(pipes);
-	}
-
-	varnishlog.pid = g_new(pid_t, 1);
-	*varnishlog.pid = pid;
-	if( (varnishlog.stdout = fdopen(pipes[0], "r")) == NULL ) {
-		g_set_error_errno(err);
-		goto out_fdopen;
-	}
-	if( close(pipes[1]) == -1 ) {
-		g_set_error_errno(err);
-		goto out_close_pipes_1;
-	}
-
-	return true;
-
-out_close_pipes_1:
-	fclose(varnishlog.stdout);
-	varnishlog.stdout = NULL;
-out_fdopen:
-	kill(*varnishlog.pid, SIGINT);
-	g_free(varnishlog.pid);
-	varnishlog.pid = NULL;
-out_fork:
-	close(pipes[0]);
-	close(pipes[1]);
-out_pipe:
-	return false;
 }
 
 static bool register_signal_handlers( GError **err ) {
@@ -255,40 +69,6 @@ static bool register_signal_handlers( GError **err ) {
 		}
 	}
 
-	return true;
-}
-
-static bool read_varnish_log_entry( char **line, size_t *len, GError **err ) {
-	size_t allocation;
-	ssize_t slen;
-	errno = 0;
-	do {
-		slen = getline(line, &allocation, varnishlog.stdout);
-		if( slen == -1 ) {
-			if( errno != 0 ) {
-				if( errno == EINTR && !shutdown )
-					continue;
-				g_set_error_errno(err);
-			} else if( feof(varnishlog.stdout) ) {
-				g_set_error_literal(
-					err,
-					ACADEMIA_VARNISHLOG_QUARK,
-					ACADEMIA_VARNISHLOG_ERROR_EOF,
-					"End of file found on varnishlog pipe"
-				);
-			} else {
-				g_set_error_literal(
-					err,
-					ACADEMIA_VARNISHLOG_QUARK,
-					ACADEMIA_VARNISHLOG_ERROR_UNSPEC,
-					"Unspecified error reading varnishlog pipe"
-				);
-			}
-			return false;
-		}
-	} while( slen == -1 );
-	*len = slen;
-	if( (*line)[slen - 1] == '\n' ) (*line)[slen - 1] = '\0';
 	return true;
 }
 
@@ -336,7 +116,8 @@ static GError *rails_sender_main( SenderControl *control ) {
 int main() {
 	GError *err = NULL;
 
-	if( !start_varnishlog(&err) ) goto out_start_varnishlog;
+	Varnishlog *v = start_varnishlog(&err);
+	if( v == NULL ) goto out_start_varnishlog;
 	if( !register_signal_handlers(&err) ) goto out_register_signal_handlers;
 
 	SenderControl sender_control = {
@@ -353,13 +134,21 @@ int main() {
 		String *line = g_slice_new(String);
 		memset(line, 0, sizeof(*line));
 
-		if( !read_varnish_log_entry(&line->bytes, &line->len, &err) ) {
-			if( shutdown ) {
-				g_clear_error(&err);
-				break;
+		// Sorry for the confusing loop
+		do {
+			if( !read_varnishlog_entry(v, &line->bytes, &line->len, &err) ) {
+				if( shutdown ) {
+					g_clear_error(&err);
+					break;
+				} else if( err->domain == ACADEMIA_VARNISHLOG_ERRNO_QUARK && err->code == EINTR ) {
+					// Retry if the syscall was interrupted.
+					g_clear_error(&err);
+					continue;
+				}
+				goto out_read_varnishlog_entry;
 			}
-			goto out_read_varnish_log_entry;
-		}
+			break;
+		} while( true );
 
 		g_mutex_lock(&sender_control.lines_mutex);
 		sender_control.lines = g_slist_prepend(sender_control.lines, line);
@@ -378,7 +167,7 @@ int main() {
 	if( err != NULL ) goto out_g_thread_join;
 
 	int stat;
-	if( !shutdown_varnishlog(&stat, &err) ) goto out_shutdown_varnishlog;
+	if( !shutdown_varnishlog(v, &stat, &err) ) goto out_shutdown_varnishlog;
 
 	g_mutex_clear(&sender_control.lines_mutex);
 	g_cond_clear(&sender_control.lines_cond);
@@ -390,7 +179,7 @@ int main() {
 
 out_shutdown_varnishlog:
 out_g_thread_join:
-out_read_varnish_log_entry:
+out_read_varnishlog_entry:
 out_high_priority_thread:
 	sender_control.shutdown = true;
 
@@ -405,7 +194,7 @@ out_high_priority_thread:
 	g_mutex_clear(&sender_control.lines_mutex);
 	g_cond_clear(&sender_control.lines_cond);
 out_register_signal_handlers:
-	shutdown_varnishlog(NULL, NULL);
+	shutdown_varnishlog(v, NULL, NULL);
 out_start_varnishlog:
 	g_die(err);
 }

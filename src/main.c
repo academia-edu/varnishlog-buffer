@@ -14,6 +14,7 @@
 #include <stdlib.h>
 #include <stdint.h>
 #include <sys/wait.h>
+#include <pthread.h>
 
 #include <glib.h>
 
@@ -97,10 +98,22 @@ static void g_die( GError *err ) {
 	}
 }
 
-static bool high_priority( GError **err ) {
+static bool high_priority_process( int prio, GError **err ) {
 	struct sched_param param = {0};
-	param.sched_priority = 10; // Arbitrarily chosen. Priorities range from 1 - 99. See chrt -m
+	param.sched_priority = prio;
 	if( sched_setscheduler(getpid(), SCHED_FIFO, &param) == -1 ) {
+		g_set_error_errno(err);
+		return false;
+	}
+	return true;
+}
+
+static bool high_priority_thread( int prio, GError **err ) {
+	struct sched_param param = {0};
+	param.sched_priority = prio;
+	// The type of the return value of pthread_setschedparam is actually undocumented,
+	// so it may not be safe to assign it to errno.
+	if( (errno = pthread_setschedparam(pthread_self(), SCHED_FIFO, &param)) != 0 ) {
 		g_set_error_errno(err);
 		return false;
 	}
@@ -147,7 +160,8 @@ static void start_varnishlog_child_noreturn( int pipes[2] ) {
 	if( dup2(pipes[1], 1) == -1 ) die(strerror(errno));
 	if( close(pipes[1]) == -1 ) die(strerror(errno));
 
-	if( !high_priority(&err) ) g_die(err);
+	// The priority is arbitrarily chosen. Priorities range from 1 - 99. See chrt -m
+	if( !high_priority_process(10, &err) ) g_die(err);
 
 	char *argv[] = {
 		"varnishlog",
@@ -304,6 +318,9 @@ int main() {
 	g_mutex_init(&sender_control.lines_mutex);
 	g_cond_init(&sender_control.lines_cond);
 
+	// Priority is arbitrary chosen, but should be lower than varnishlog's
+	if( !high_priority_thread(9, &err) ) goto out_high_priority_thread;
+
 	while( !shutdown ) {
 		String *line = g_slice_new(String);
 		memset(line, 0, sizeof(*line));
@@ -338,6 +355,7 @@ int main() {
 
 out_shutdown_varnishlog:
 out_read_varnish_log_entry:
+out_high_priority_thread:
 	sender_control.shutdown = true;
 
 	g_mutex_lock(&sender_control.lines_mutex);

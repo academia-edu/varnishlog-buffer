@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <stdbool.h>
 #include <errno.h>
+#include <unistd.h>
 
 #include <glib.h>
 
@@ -20,13 +21,13 @@
 // Priority is arbitrary chosen, but should be lower than varnishlog's
 #define HIGH_THREAD_PRIORITY 9
 
+#define SENDER_SLEEP_NS (50*1000)
+
 static volatile bool shutdown = false;
 
 typedef struct SenderControl {
 	GThread *thread;
 	GSList *lines;
-	GMutex lines_mutex;
-	GCond lines_cond;
 	volatile bool shutdown;
 } SenderControl;
 
@@ -58,37 +59,25 @@ static bool register_signal_handlers( GError **err ) {
 	return true;
 }
 
-static void send_log_entry_to_rails( String *line ) {
-	printf("%s\n", line->bytes);
+static void send_log_entry_to_rails( GString *line ) {
+	printf("%s\n", line->str);
 	fflush(stdout);
 }
 
+static void string_free( GString *str ) {
+	g_string_free(str, true);
+}
+
 static GError *rails_sender_main( SenderControl *control ) {
-	pthread_t thread = pthread_self();
-	GError *err = NULL;
-
 	while( !control->shutdown ) {
-		// Temporarily raise our priority for the duration of the critical section.
-		int osched, oprio;
-		if( !swap_thread_priority(thread, SCHED_FIFO, HIGH_THREAD_PRIORITY, &osched, &oprio, &err) )
-			return err;
-
-		g_mutex_lock(&control->lines_mutex);
-		while( control->lines == NULL && !control->shutdown )
-			g_cond_wait(&control->lines_cond, &control->lines_mutex);
-
-		// Keep in mind lines may be NULL
-		GSList *lines = control->lines;
-		control->lines = NULL;
-		g_mutex_unlock(&control->lines_mutex);
-
-		if( !set_thread_priority(thread, osched, oprio, &err) )
-			return err;
+		GSList *lines = (GSList *) g_atomic_pointer_and(&control->lines, 0);
 
 		lines = g_slist_reverse(lines);
 
 		g_slist_foreach(lines, (GFunc) send_log_entry_to_rails, NULL);
 		g_slist_free_full(lines, (GDestroyNotify) string_free);
+
+		usleep(SENDER_SLEEP_NS);
 	}
 
 	return NULL;
@@ -106,51 +95,38 @@ int main() {
 		.lines = NULL,
 		.shutdown = false
 	};
-	g_mutex_init(&sender_control.lines_mutex);
-	g_cond_init(&sender_control.lines_cond);
 
 	if( !high_priority_thread(HIGH_THREAD_PRIORITY, &err) ) goto out_high_priority_thread;
 
 	while( !shutdown ) {
-		char *line_bytes = NULL;
-		size_t line_len;
-
-restart_after_eintr:
-		if( !read_varnishlog_entry(v, &line_bytes, &line_len, &err) ) {
+		GString *line = read_varnishlog_entry(v, &err);
+		if( line == NULL ) {
 			if( shutdown ) {
 				g_clear_error(&err);
 				break;
 			} else if( err->domain == ACADEMIA_VARNISHLOG_ERRNO_QUARK && err->code == EINTR ) {
 				// Retry if the syscall was interrupted.
 				g_clear_error(&err);
-				goto restart_after_eintr;
+				continue;
 			}
 			goto out_read_varnishlog_entry;
 		}
 
-		String *line = string_new_malloced_with_len(line_bytes, line_len);
-
-		g_mutex_lock(&sender_control.lines_mutex);
-		sender_control.lines = g_slist_prepend(sender_control.lines, line);
-		g_cond_signal(&sender_control.lines_cond);
-		g_mutex_unlock(&sender_control.lines_mutex);
+		GSList *lines = (GSList *) g_atomic_pointer_and(&sender_control.lines, 0);
+		lines = g_slist_prepend(lines, line);
+		g_atomic_pointer_set(&sender_control.lines, lines);
 	}
 
 	sender_control.shutdown = true;
 
-	// Wake up the other thread
-	g_mutex_lock(&sender_control.lines_mutex);
-	g_cond_broadcast(&sender_control.lines_cond);
-	g_mutex_unlock(&sender_control.lines_mutex);
-
 	err = g_thread_join(sender_control.thread);
 	if( err != NULL ) goto out_g_thread_join;
 
+	g_slist_foreach(sender_control.lines, (GFunc) send_log_entry_to_rails, NULL);
+	g_slist_free_full(sender_control.lines, (GDestroyNotify) string_free);
+
 	int stat;
 	if( !shutdown_varnishlog(v, &stat, &err) ) goto out_shutdown_varnishlog;
-
-	g_mutex_clear(&sender_control.lines_mutex);
-	g_cond_clear(&sender_control.lines_cond);
 
 	if( !WIFSIGNALED(stat) || WTERMSIG(stat) != SIGINT )
 		return stat;
@@ -163,16 +139,7 @@ out_read_varnishlog_entry:
 out_high_priority_thread:
 	sender_control.shutdown = true;
 
-	g_mutex_lock(&sender_control.lines_mutex);
-	if( sender_control.lines != NULL ) {
-		g_slist_free_full(sender_control.lines, (GDestroyNotify) string_free);
-		sender_control.lines = NULL;
-	}
-	g_cond_broadcast(&sender_control.lines_cond);
-	g_mutex_unlock(&sender_control.lines_mutex);
-
-	g_mutex_clear(&sender_control.lines_mutex);
-	g_cond_clear(&sender_control.lines_cond);
+	g_slist_free_full(sender_control.lines, (GDestroyNotify) string_free);
 out_register_signal_handlers:
 	shutdown_varnishlog(v, NULL, NULL);
 out_start_varnishlog:

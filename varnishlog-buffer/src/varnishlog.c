@@ -112,10 +112,11 @@ out_pipe:
 	return NULL;
 }
 
-bool read_varnishlog_entry( Varnishlog *v, char **line, size_t *len, GError **err ) {
+GString *read_varnishlog_entry( Varnishlog *v, GError **err ) {
 	size_t allocation;
+	char *line = NULL;
 	errno = 0;
-	ssize_t slen = getline(line, &allocation, v->stdout);
+	ssize_t slen = getline(&line, &allocation, v->stdout);
 	if( slen == -1 ) {
 		if( errno != 0 ) {
 			g_set_error_errno(err);
@@ -134,9 +135,14 @@ bool read_varnishlog_entry( Varnishlog *v, char **line, size_t *len, GError **er
 				"Unspecified error reading varnishlog pipe"
 			);
 		}
-		return false;
+		return NULL;
 	}
-	*len = slen;
-	if( (*line)[slen - 1] == '\n' ) (*line)[slen - 1] = '\0';
-	return true;
+	if( line[slen - 1] == '\n' ) line[slen - 1] = '\0';
+
+	GString *ret = g_slice_new(GString);
+	ret->str = line;
+	ret->len = slen;
+	ret->allocated_len = allocation;
+
+	return ret;
 }

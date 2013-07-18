@@ -1,4 +1,4 @@
-SRC_SOURCES := main.c die.c errors.c glib_extra.c priority.c varnishlog.c strings.c
+SRC_SOURCES := main.c die.c errors.c glib_extra.c priority.c varnishlog.c
 SRC_SOURCES := $(SRC_SOURCES:%=$(CURDIR)/%)
 
 SRC_OBJECTS := $(SRC_SOURCES:.c=.o)

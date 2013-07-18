@@ -41,13 +41,3 @@ bool set_thread_priority( pthread_t thread, int sched, int prio, GError **err ) 
 bool high_priority_thread( int prio, GError **err ) {
 	return set_thread_priority(pthread_self(), SCHED_FIFO, prio, err);
 }
-
-bool swap_thread_priority( pthread_t thread, int sched, int prio, int *osched, int *oprio, GError **err ) {
-	struct sched_param param;
-	if( (errno = pthread_getschedparam(thread, osched, &param)) != 0 ) {
-		g_set_error_errno(err);
-		return false;
-	}
-	*oprio = param.sched_priority;
-	return set_thread_priority(thread, sched, prio, err);
-}

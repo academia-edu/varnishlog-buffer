@@ -139,7 +139,17 @@ GString *read_varnishlog_entry( Varnishlog *v, GError **err ) {
 	}
 	if( line[slen - 1] == '\n' ) line[slen - 1] = '\0';
 
-	GString *ret = g_slice_new(GString);
+	// Here we manufacture a GString by creating one sized for 1 character
+	// then freeing that 1 character and adding our data. We can't use
+	// g_slice_new here because we don't know if g_string_free will use
+	// g_slice_free or not. In fact manufacturing a GString like this is still
+	// slightly risky as there may be undocumented fields in a GString. As of
+	// glib 2.36.3 there are not however. The one other danger is if g_free ever
+	// becomes incompatible with memory allocated using plain malloc, as that's
+	// what g_string_free uses to free the character data, and malloc is what
+	// getline uses to allocate the character data.
+	GString *ret = g_string_sized_new(1);
+	g_free(ret->str);
 	ret->str = line;
 	ret->len = slen;
 	ret->allocated_len = allocation;

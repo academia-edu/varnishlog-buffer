@@ -12,7 +12,7 @@
 #include "die.h"
 
 __attribute__((noreturn))
-void _die_v( const char *fmt, va_list ap ) {
+void diefv( const char *fmt, va_list ap ) {
 	fprintf(stderr, "%ju: ", (uintmax_t) getpid());
 	vfprintf(stderr, fmt, ap);
 	fprintf(stderr, "\n");
@@ -21,16 +21,16 @@ void _die_v( const char *fmt, va_list ap ) {
 }
 
 __attribute__((noreturn))
-void _die( const char *fmt, ... ) {
+void dief( const char *fmt, ... ) {
 	va_list ap;
 	va_start(ap, fmt);
-	_die_v(fmt, ap);
+	diefv(fmt, ap);
 	g_assert(false); // Impossible
 }
 
 __attribute__((noreturn))
 void die( const char *msg ) {
-	_die("%s", msg);
+	dief("%s", msg);
 }
 
 __attribute__((noreturn))

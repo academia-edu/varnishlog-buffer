@@ -23,16 +23,17 @@
 
 #define SENDER_SLEEP_NS (50*1000)
 
-static volatile bool shutdown = false;
+
+static volatile gint shutdown = false;
 
 typedef struct SenderControl {
 	GThread *thread;
 	GSList *lines;
-	volatile bool shutdown;
+	volatile gint shutdown;
 } SenderControl;
 
 static void shutdown_sigaction() {
-	shutdown = true;
+	g_atomic_int_set(&shutdown, true);
 }
 
 static bool register_signal_handlers( GError **err ) {
@@ -69,7 +70,7 @@ static void string_free( GString *str ) {
 }
 
 static GError *rails_sender_main( SenderControl *control ) {
-	while( !control->shutdown ) {
+	while( !g_atomic_int_get(&control->shutdown) ) {
 		GSList *lines = (GSList *) g_atomic_pointer_and(&control->lines, 0);
 
 		lines = g_slist_reverse(lines);
@@ -98,7 +99,7 @@ int main() {
 
 	if( !high_priority_thread(HIGH_THREAD_PRIORITY, &err) ) goto out_high_priority_thread;
 
-	while( !shutdown ) {
+	while( !g_atomic_int_get(&shutdown) ) {
 		GString *line = read_varnishlog_entry(v, &err);
 		if( line == NULL ) {
 			if( shutdown ) {
@@ -117,7 +118,7 @@ int main() {
 		g_atomic_pointer_set(&sender_control.lines, lines);
 	}
 
-	sender_control.shutdown = true;
+	g_atomic_int_set(&sender_control.shutdown, true);
 
 	err = g_thread_join(sender_control.thread);
 	if( err != NULL ) goto out_g_thread_join;
@@ -137,7 +138,7 @@ out_shutdown_varnishlog:
 out_g_thread_join:
 out_read_varnishlog_entry:
 out_high_priority_thread:
-	sender_control.shutdown = true;
+	g_atomic_int_set(&sender_control.shutdown, true);
 	g_thread_join(sender_control.thread);
 
 	g_slist_free_full(sender_control.lines, (GDestroyNotify) string_free);

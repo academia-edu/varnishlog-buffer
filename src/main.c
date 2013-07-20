@@ -138,6 +138,7 @@ out_g_thread_join:
 out_read_varnishlog_entry:
 out_high_priority_thread:
 	sender_control.shutdown = true;
+	g_thread_join(sender_control.thread);
 
 	g_slist_free_full(sender_control.lines, (GDestroyNotify) string_free);
 out_register_signal_handlers:

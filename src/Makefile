@@ -1,14 +1,14 @@
 .PHONY: src/all src/clean src/depclean
 
-src/all: src/academia-varnishlog.exe
+src/all: src/varnishlog-buffer.exe
 
 src/clean:
-	$(RM) $(SRC_OBJECTS) $(CURDIR)/academia-varnishlog.exe
+	$(RM) $(SRC_OBJECTS) $(CURDIR)/varnishlog-buffer.exe
 
 src/depclean:
 	$(RM) $(SRC_DEPS)
 
-src/academia-varnishlog.exe: $(ALL_OBJECTS)
-src/academia-varnishlog.exe: EXE_OBJECTS := $(ALL_OBJECTS)
+src/varnishlog-buffer.exe: $(ALL_OBJECTS)
+src/varnishlog-buffer.exe: EXE_OBJECTS := $(ALL_OBJECTS)
 
 -include $(SRC_DEPS)

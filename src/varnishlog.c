@@ -101,12 +101,18 @@ out_high_priority_process:
 }
 
 static volatile bool child_error_waiting = false;
+static int child_error_fd;
 
 // Be careful, this function is called in a signal handler context.
 static void child_error_io_ready() {
-	g_atomic_int_set(&child_error_waiting, true);
+	int saved_errno = errno;
+	errno = 0;
+	if( fcntl(child_error_fd, F_GETFD) != -1 || errno != EBADF )
+		g_atomic_int_set(&child_error_waiting, true);
+	errno = saved_errno;
 }
 
+// Note that only one Varnishlog may exist at a time.
 Varnishlog *start_varnishlog( GError **err ) {
 	int pipes[2], error_pipes[2];
 	bool closed_pipes_1 = false, closed_error_pipes_1 = false;
@@ -120,6 +126,8 @@ Varnishlog *start_varnishlog( GError **err ) {
 		g_set_error_errno(err);
 		goto out_error_pipes;
 	}
+
+	child_error_fd = error_pipes[0];
 
 	if( fcntl(error_pipes[1], F_SETFD, FD_CLOEXEC) == -1 ) {
 		g_set_error_errno(err);
@@ -213,22 +221,12 @@ out_pipes:
 
 static bool set_error_from_child_if_pending( Varnishlog *v, GError **err ) {
 	if( !g_atomic_int_get(&child_error_waiting) ) return false;
-	GError *_err = NULL;
-	GError *cld_err = read_gerror(v->error_channel, &_err);
-	if( _err != NULL ) {
-		if(
-			_err->domain == ACADEMIA_VARNISHLOG_QUARK &&
-			_err->code == ACADEMIA_VARNISHLOG_ERROR_EOF
-		) {
-			// We recieve SIGIO when the other end of the fd closes.
-			// Ignore that case.
-			g_atomic_int_set(&child_error_waiting, false);
-			g_error_free(_err);
-			return false;
-		}
-		g_propagate_error(err, _err);
-	}
-	g_assert(cld_err != NULL);
+
+	GError *cld_err = read_gerror(v->error_channel, err);
+	if( cld_err == NULL ) return false;
+	// Note that there is a race here if the child wants to send more errors.
+	//                                Meh.
+	g_atomic_int_set(&child_error_waiting, false);
 	g_propagate_error(err, cld_err);
 	return true;
 }
@@ -238,9 +236,21 @@ GString *read_varnishlog_entry( Varnishlog *v, GError **err ) {
 	char *line = NULL;
 	errno = 0;
 	ssize_t slen = getline(&line, &allocation, v->stdout);
+	int saved_errno = errno;
 	if( slen == -1 ) {
-		if( !set_error_from_child_if_pending(v, err) )
-			set_gerror_getline(v->stdout, err);
+		GError *_err = NULL;
+		if( set_error_from_child_if_pending(v, &_err) ) {
+			// Got an error from the child.
+			g_propagate_error(err, _err);
+		} else {
+			// Didn't get an error from the child.
+			if( _err == NULL ) {
+				errno = saved_errno;
+				set_gerror_getline(v->stdout, err);
+			} else {
+				g_propagate_error(err, _err);
+			}
+		}
 		return NULL;
 	}
 	if( line[slen - 1] == '\n' ) line[slen - 1] = '\0';

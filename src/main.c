@@ -128,7 +128,7 @@ int main() {
 			if( g_atomic_int_get(&shutdown) ) {
 				g_clear_error(&err);
 				break;
-			} else if( err->domain == ACADEMIA_VARNISHLOG_ERRNO_QUARK && err->code == EINTR ) {
+			} else if( err->domain == ERRNO_QUARK && err->code == EINTR ) {
 				// Retry if the syscall was interrupted.
 				g_clear_error(&err);
 				continue;

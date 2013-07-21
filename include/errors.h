@@ -1,16 +1,16 @@
 #ifndef _ERRORS_H_
 #define _ERRORS_H_
 
-typedef enum AcademiaVarnishLogError {
-	ACADEMIA_VARNISHLOG_ERROR_EOF,
-	ACADEMIA_VARNISHLOG_ERROR_UNSPEC
-} AcademiaVarnishLogError;
+typedef enum VarnishlogBufferError {
+	VARNISHLOG_BUFFER_ERROR_EOF,
+	VARNISHLOG_BUFFER_ERROR_UNSPEC
+} VarnishlogBufferError;
 
-#define ACADEMIA_VARNISHLOG_QUARK academia_varnishlog_quark()
-#define ACADEMIA_VARNISHLOG_ERRNO_QUARK academia_varnishlog_errno_quark()
+#define VARNISHLOG_BUFFER_QUARK varnishlog_buffer_quark()
+#define ERRNO_QUARK errno_quark()
 
-GQuark academia_varnishlog_quark();
-GQuark academia_varnishlog_errno_quark();
+GQuark varnishlog_buffer_quark();
+GQuark errno_quark();
 bool write_gerror( GIOChannel *channel, GError *e, GError **err );
 GError *read_gerror( GIOChannel *channel, GError **err );
 void set_gerror_getline( FILE *, GError ** );

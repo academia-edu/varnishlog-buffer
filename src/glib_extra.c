@@ -12,7 +12,7 @@ void g_set_error_errno( GError **err ) {
 	int saved_errno = errno;
 	g_set_error(
 		err,
-		ACADEMIA_VARNISHLOG_ERRNO_QUARK,
+		ERRNO_QUARK,
 		saved_errno,
 		"%s",
 		strerror(saved_errno)

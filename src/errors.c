@@ -11,19 +11,19 @@
 #include "errors.h"
 #include "glib_extra.h"
 
-GQuark academia_varnishlog_quark() {
-	return g_quark_from_static_string("academia-varnishlog-quark");
+GQuark varnishlog_buffer_quark() {
+	return g_quark_from_static_string("varnishlog-buffer");
 }
 
-GQuark academia_varnishlog_errno_quark() {
-	return g_quark_from_static_string("academia-varnishlog-errno-quark");
+GQuark errno_quark() {
+	return g_quark_from_static_string("errno");
 }
 
 static void set_error_eof( GError **err ) {
 	g_set_error_literal(
 		err,
-		ACADEMIA_VARNISHLOG_QUARK,
-		ACADEMIA_VARNISHLOG_ERROR_EOF,
+		VARNISHLOG_BUFFER_QUARK,
+		VARNISHLOG_BUFFER_ERROR_EOF,
 		"Premature end of file"
 	);
 }
@@ -31,8 +31,8 @@ static void set_error_eof( GError **err ) {
 static void set_error_unspec( GError **err ) {
 	g_set_error_literal(
 		err,
-		ACADEMIA_VARNISHLOG_QUARK,
-		ACADEMIA_VARNISHLOG_ERROR_UNSPEC,
+		VARNISHLOG_BUFFER_QUARK,
+		VARNISHLOG_BUFFER_ERROR_UNSPEC,
 		"Unspecified error"
 	);
 }

@@ -3,7 +3,6 @@
 #include <stdarg.h>
 #include <stdint.h>
 #include <sys/types.h>
-#include <unistd.h>
 #include <stdbool.h>
 
 #include <glib.h>
@@ -13,7 +12,6 @@
 
 __attribute__((noreturn))
 void diefv( const char *fmt, va_list ap ) {
-	fprintf(stderr, "%ju: ", (uintmax_t) getpid());
 	vfprintf(stderr, fmt, ap);
 	fprintf(stderr, "\n");
 	exit(EXIT_FAILURE);
@@ -36,7 +34,7 @@ void die( const char *msg ) {
 __attribute__((noreturn))
 void g_die( GError *err ) {
 	if( err != NULL ) {
-		die(err->message);
+		dief("%s (%d): %s", g_quark_to_string(err->domain), err->code, err->message);
 	} else {
 		die("Unspecified error");
 	}

@@ -6,6 +6,7 @@
 #include <errno.h>
 #include <sys/types.h>
 #include <sys/wait.h>
+#include <fcntl.h>
 
 #include <glib.h>
 
@@ -19,44 +20,63 @@
 struct Varnishlog {
 	pid_t *pid;
 	FILE *stdout;
+	GIOChannel *error_channel;
 };
 
 bool shutdown_varnishlog( Varnishlog *v, int *stat, GError **err ) {
-	g_return_val_if_fail(v->pid != NULL, true);
+	if( v->pid != NULL ) {
+		errno = 0;
+		if( kill(*v->pid, SIGINT) == -1 ) {
+			if( errno != ESRCH ) {
+				g_set_error_errno(err);
+				return false;
+			}
+		}
 
-	errno = 0;
-	if( kill(*v->pid, SIGINT) == -1 ) {
-		if( errno != ESRCH ) {
+		if( waitpid(*v->pid, stat, 0) == -1 ) {
 			g_set_error_errno(err);
 			return false;
 		}
+
+		g_free(v->pid);
+		v->pid = NULL;
 	}
-	if( fclose(v->stdout) != 0 ) {
-		g_set_error_errno(err);
-		return false;
+
+	if( v->stdout != NULL ) {
+		if( fclose(v->stdout) != 0 ) {
+			g_set_error_errno(err);
+			return false;
+		}
+		v->stdout = NULL;
 	}
-	v->stdout = NULL;
-	if( waitpid(*v->pid, stat, 0) == -1 ) {
-		g_set_error_errno(err);
-		return false;
+
+	if( v->error_channel != NULL ) {
+		GIOStatus status = g_io_channel_shutdown(v->error_channel, false, err);
+		g_assert(status != G_IO_STATUS_AGAIN);
+		g_assert(status != G_IO_STATUS_EOF);
+		if( status != G_IO_STATUS_NORMAL )
+			return false;
+		g_io_channel_unref(v->error_channel);
+		v->error_channel = NULL;
 	}
-	g_free(v->pid);
-	v->pid = NULL;
+
+	g_slice_free(Varnishlog, v);
+
 	return true;
 }
 
 __attribute__((noreturn))
-static void start_varnishlog_child_noreturn( int pipes[2] ) {
-	// TODO: Have a way to communicate a GError to the parent
+static void start_varnishlog_child_noreturn( int pipes[2], int error_pipes[2], GIOChannel *error_out ) {
 	GError *err = NULL;
 
-	if( close(pipes[0]) == -1 ) die(strerror(errno));
-	if( close(1) == -1 ) die(strerror(errno));
-	if( dup2(pipes[1], 1) == -1 ) die(strerror(errno));
-	if( close(pipes[1]) == -1 ) die(strerror(errno));
+	if( close(error_pipes[0]) == -1 ) goto out_close_error_pipes_0;
+	if( close(pipes[0]) == -1 ) goto out_close_pipes_0;
+	if( close(1) == -1 ) goto out_close_1;
+	if( dup2(pipes[1], 1) == -1 ) goto out_dup2;
+	if( close(pipes[1]) == -1 ) goto out_close_pipes_1;
 
 	// The priority is arbitrarily chosen. Priorities range from 1 - 99. See chrt -m
-	if( !high_priority_process(10, &err) ) g_die(err);
+	if( !high_priority_process(10, &err) ) goto out_high_priority_process;
 
 	char *argv[] = {
 		"varnishlog",
@@ -65,51 +85,147 @@ static void start_varnishlog_child_noreturn( int pipes[2] ) {
 	};
 
 	execvp(argv[0], argv);
-	die(strerror(errno));
+	// Fall through to error cases if we get here.
+
+out_close_pipes_1:
+out_dup2:
+out_close_1:
+out_close_pipes_0:
+out_close_error_pipes_0:
+	g_set_error_errno(&err);
+out_high_priority_process:
+	if( !write_gerror(error_out, err, NULL) )
+		g_die(err);
+	exit(EXIT_FAILURE);
+	g_assert(false); // l'impossible!
+}
+
+static volatile bool child_error_waiting = false;
+
+// Be careful, this function is called in a signal handler context.
+static void child_error_io_ready() {
+	g_atomic_int_set(&child_error_waiting, true);
 }
 
 Varnishlog *start_varnishlog( GError **err ) {
-	int pipes[2];
+	int pipes[2], error_pipes[2];
+	bool closed_pipes_1 = false, closed_error_pipes_1 = false;
+
 	if( pipe(pipes) == -1 ) {
 		g_set_error_errno(err);
-		goto out_pipe;
+		goto out_pipes;
 	}
+
+	if( pipe(error_pipes) == -1 ) {
+		g_set_error_errno(err);
+		goto out_error_pipes;
+	}
+
+	if( fcntl(error_pipes[0], F_SETFL, O_ASYNC) == -1 ) {
+		g_set_error_errno(err);
+		goto out_error_pipes_fcntl;
+	}
+
+	if( fcntl(error_pipes[0], F_SETOWN, getpid()) == -1 ) {
+		g_set_error_errno(err);
+		goto out_error_pipes_fcntl;
+	}
+
+	struct sigaction act, oact;
+	memset(&act, 0, sizeof(act));
+	act.sa_handler = (void (*)( int )) child_error_io_ready;
+	if( sigaction(SIGIO, &act, &oact) == -1 ) {
+		g_set_error_errno(err);
+		goto out_error_pipes_sigaction;
+	}
+
+	GIOChannel *error_write = g_io_channel_unix_new(error_pipes[1]),
+	           *error_read = g_io_channel_unix_new(error_pipes[0]);
+
+	if( g_io_channel_set_encoding(error_write, NULL, err) != G_IO_STATUS_NORMAL )
+		goto out_error_write_set_encoding;
+
+	if( g_io_channel_set_encoding(error_read, NULL, err) != G_IO_STATUS_NORMAL )
+		goto out_error_read_set_encoding;
 
 	pid_t pid = fork();
 	if( pid == -1 ) {
 		g_set_error_errno(err);
 		goto out_fork;
 	} else if( pid == 0 ) {
-		start_varnishlog_child_noreturn(pipes);
+		g_io_channel_unref(error_read);
+		start_varnishlog_child_noreturn(pipes, error_pipes, error_write);
+	}
+
+	g_io_channel_unref(error_write);
+
+	if( close(pipes[1]) == -1 ) {
+		g_set_error_errno(err);
+		goto out_close_pipes_1;
+	}
+	closed_pipes_1 = true;
+
+	if( close(error_pipes[1]) == -1 ) {
+		g_set_error_errno(err);
+		goto out_close_error_pipes_1;
+	}
+	closed_error_pipes_1 = true;
+
+	FILE *child_stdout;
+	if( (child_stdout = fdopen(pipes[0], "r")) == NULL ) {
+		g_set_error_errno(err);
+		goto out_fdopen_pipes_0;
 	}
 
 	Varnishlog *v = g_slice_new(Varnishlog);
 	v->pid = g_new(pid_t, 1);
 	*v->pid = pid;
-	if( (v->stdout = fdopen(pipes[0], "r")) == NULL ) {
-		g_set_error_errno(err);
-		goto out_fdopen;
-	}
-	if( close(pipes[1]) == -1 ) {
-		g_set_error_errno(err);
-		goto out_close_pipes_1;
-	}
+	v->error_channel = error_read;
+	v->stdout = child_stdout;
 
 	return v;
 
+out_fdopen_pipes_0:
+out_close_error_pipes_1:
 out_close_pipes_1:
-	fclose(v->stdout);
-	v->stdout = NULL;
-out_fdopen:
-	kill(*v->pid, SIGINT);
-	g_free(v->pid);
-	v->pid = NULL;
-	g_slice_free(Varnishlog, v);
+	kill(pid, SIGINT);
 out_fork:
+out_error_read_set_encoding:
+out_error_write_set_encoding:
+	g_io_channel_unref(error_read);
+	g_io_channel_unref(error_write);
+	sigaction(SIGIO, &oact, &act);
+out_error_pipes_sigaction:
+out_error_pipes_fcntl:
+	close(error_pipes[0]);
+	if( !closed_error_pipes_1 ) close(error_pipes[1]);
+out_error_pipes:
 	close(pipes[0]);
-	close(pipes[1]);
-out_pipe:
+	if( !closed_pipes_1 ) close(pipes[1]);
+out_pipes:
 	return NULL;
+}
+
+static bool set_error_from_child_if_pending( Varnishlog *v, GError **err ) {
+	if( !g_atomic_int_get(&child_error_waiting) ) return false;
+	GError *_err = NULL;
+	GError *cld_err = read_gerror(v->error_channel, &_err);
+	if( _err != NULL ) {
+		if(
+			_err->domain == ACADEMIA_VARNISHLOG_QUARK &&
+			_err->code == ACADEMIA_VARNISHLOG_ERROR_EOF
+		) {
+			// We recieve SIGIO when the other end of the fd closes.
+			// Ignore that case.
+			g_atomic_int_set(&child_error_waiting, false);
+			g_error_free(_err);
+			return false;
+		}
+		g_propagate_error(err, _err);
+	}
+	g_assert(cld_err != NULL);
+	g_propagate_error(err, cld_err);
+	return true;
 }
 
 GString *read_varnishlog_entry( Varnishlog *v, GError **err ) {
@@ -118,41 +234,15 @@ GString *read_varnishlog_entry( Varnishlog *v, GError **err ) {
 	errno = 0;
 	ssize_t slen = getline(&line, &allocation, v->stdout);
 	if( slen == -1 ) {
-		if( errno != 0 ) {
-			g_set_error_errno(err);
-		} else if( feof(v->stdout) ) {
-			g_set_error_literal(
-				err,
-				ACADEMIA_VARNISHLOG_QUARK,
-				ACADEMIA_VARNISHLOG_ERROR_EOF,
-				"End of file found on varnishlog pipe"
-			);
-		} else {
-			g_set_error_literal(
-				err,
-				ACADEMIA_VARNISHLOG_QUARK,
-				ACADEMIA_VARNISHLOG_ERROR_UNSPEC,
-				"Unspecified error reading varnishlog pipe"
-			);
-		}
+		if( !set_error_from_child_if_pending(v, err) )
+			set_gerror_getline(v->stdout, err);
 		return NULL;
 	}
 	if( line[slen - 1] == '\n' ) line[slen - 1] = '\0';
 
-	// Here we manufacture a GString by creating one sized for 1 character
-	// then freeing that 1 character and adding our data. We can't use
-	// g_slice_new here because we don't know if g_string_free will use
-	// g_slice_free or not. In fact manufacturing a GString like this is still
-	// slightly risky as there may be undocumented fields in a GString. As of
-	// glib 2.36.3 there are not however. The one other danger is if g_free ever
-	// becomes incompatible with memory allocated using plain malloc, as that's
-	// what g_string_free uses to free the character data, and malloc is what
-	// getline uses to allocate the character data.
-	GString *ret = g_string_sized_new(1);
-	g_free(ret->str);
-	ret->str = line;
-	ret->len = slen;
-	ret->allocated_len = allocation;
+	GString *ret = g_string_wrap(line, slen, allocation);
+
+	set_error_from_child_if_pending(v, err);
 
 	return ret;
 }

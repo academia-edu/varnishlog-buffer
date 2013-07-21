@@ -22,12 +22,12 @@
 #define SENDER_SLEEP_NS (50*1000)
 
 
-static volatile gint shutdown = false;
+static volatile bool shutdown = false;
 
 typedef struct SenderControl {
 	GThread *thread;
 	GSList *lines;
-	volatile gint shutdown;
+	volatile bool shutdown;
 } SenderControl;
 
 static void shutdown_sigaction() {
@@ -58,9 +58,12 @@ static bool register_signal_handlers( GError **err ) {
 	return true;
 }
 
-static void send_log_entry_to_rails( GString *line ) {
-	printf("%s\n", line->str);
-	fflush(stdout);
+static void send_log_entry_to_rails( GString *line, GError **err ) {
+	g_assert(line != NULL);
+	if( err != NULL && *err != NULL ) return;
+
+	if( printf("%s\n", line->str) < 0 )
+		g_set_error_errno(err);
 }
 
 static void string_free( GString *str ) {
@@ -68,13 +71,19 @@ static void string_free( GString *str ) {
 }
 
 static GError *rails_sender_main( SenderControl *control ) {
-	while( !g_atomic_int_get(&control->shutdown) ) {
+	while( true ) {
 		GSList *lines = (GSList *) g_atomic_pointer_and(&control->lines, 0);
 
 		lines = g_slist_reverse(lines);
 
-		g_slist_foreach(lines, (GFunc) send_log_entry_to_rails, NULL);
+		GError *err = NULL;
+		g_slist_foreach(lines, (GFunc) send_log_entry_to_rails, &err);
 		g_slist_free_full(lines, (GDestroyNotify) string_free);
+
+		if( err != NULL ) return err;
+
+		if( g_atomic_int_get(&control->shutdown) && g_atomic_pointer_get(&control->lines) == NULL )
+			break;
 
 		usleep(SENDER_SLEEP_NS);
 	}
@@ -85,22 +94,37 @@ static GError *rails_sender_main( SenderControl *control ) {
 int main() {
 	GError *err = NULL;
 
+	// Ignore SIGPIPE. The return codes of writes will be checked.
+	if( signal(SIGPIPE, SIG_IGN) == SIG_ERR ) {
+		g_set_error_errno(&err);
+		goto out_signal_sigpipe;
+	}
+
 	Varnishlog *v = start_varnishlog(&err);
 	if( v == NULL ) goto out_start_varnishlog;
 	if( !register_signal_handlers(&err) ) goto out_register_signal_handlers;
 
 	SenderControl sender_control = {
-		.thread = g_thread_new("Rails Sender", (GThreadFunc) rails_sender_main, &sender_control),
 		.lines = NULL,
 		.shutdown = false
 	};
+	// Note that sender_control.thread might not be initialized when
+	// the thread starts.
+	sender_control.thread = g_thread_new("Rails Sender", (GThreadFunc) rails_sender_main, &sender_control);
 
 	if( !high_priority_thread(HIGH_THREAD_PRIORITY, &err) ) goto out_high_priority_thread;
 
 	while( !g_atomic_int_get(&shutdown) ) {
 		GString *line = read_varnishlog_entry(v, &err);
-		if( line == NULL ) {
-			if( shutdown ) {
+
+		if( line != NULL ) {
+			GSList *lines = (GSList *) g_atomic_pointer_and(&sender_control.lines, 0);
+			lines = g_slist_prepend(lines, line);
+			g_atomic_pointer_set(&sender_control.lines, lines);
+		}
+
+		if( err != NULL ) {
+			if( g_atomic_int_get(&shutdown) ) {
 				g_clear_error(&err);
 				break;
 			} else if( err->domain == ACADEMIA_VARNISHLOG_ERRNO_QUARK && err->code == EINTR ) {
@@ -110,10 +134,6 @@ int main() {
 			}
 			goto out_read_varnishlog_entry;
 		}
-
-		GSList *lines = (GSList *) g_atomic_pointer_and(&sender_control.lines, 0);
-		lines = g_slist_prepend(lines, line);
-		g_atomic_pointer_set(&sender_control.lines, lines);
 	}
 
 	g_atomic_int_set(&sender_control.shutdown, true);
@@ -121,8 +141,7 @@ int main() {
 	err = g_thread_join(sender_control.thread);
 	if( err != NULL ) goto out_g_thread_join;
 
-	g_slist_foreach(sender_control.lines, (GFunc) send_log_entry_to_rails, NULL);
-	g_slist_free_full(sender_control.lines, (GDestroyNotify) string_free);
+	g_assert_cmpuint(g_slist_length(sender_control.lines), ==, 0);
 
 	int stat;
 	if( !shutdown_varnishlog(v, &stat, &err) ) goto out_shutdown_varnishlog;
@@ -132,16 +151,17 @@ int main() {
 
 	return EXIT_SUCCESS;
 
-out_shutdown_varnishlog:
-out_g_thread_join:
 out_read_varnishlog_entry:
 out_high_priority_thread:
 	g_atomic_int_set(&sender_control.shutdown, true);
 	g_thread_join(sender_control.thread);
 
-	g_slist_free_full(sender_control.lines, (GDestroyNotify) string_free);
+	g_assert_cmpuint(g_slist_length(sender_control.lines), ==, 0);
+out_g_thread_join:
+out_shutdown_varnishlog:
 out_register_signal_handlers:
 	shutdown_varnishlog(v, NULL, NULL);
 out_start_varnishlog:
+out_signal_sigpipe:
 	g_die(err);
 }

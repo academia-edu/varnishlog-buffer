@@ -121,6 +121,11 @@ Varnishlog *start_varnishlog( GError **err ) {
 		goto out_error_pipes;
 	}
 
+	if( fcntl(error_pipes[1], F_SETFD, FD_CLOEXEC) == -1 ) {
+		g_set_error_errno(err);
+		goto out_error_pipes_fcntl;
+	}
+
 	if( fcntl(error_pipes[0], F_SETFL, O_ASYNC) == -1 ) {
 		g_set_error_errno(err);
 		goto out_error_pipes_fcntl;

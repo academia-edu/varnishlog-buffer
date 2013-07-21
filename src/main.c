@@ -31,6 +31,11 @@ typedef struct SenderControl {
 } SenderControl;
 
 static void shutdown_sigaction() {
+	// Ignore SIGPIPE. The return codes of writes will be checked.
+	// stdout may have just gone away. We will still try to write any remaining
+	// buffer, but if stdout is gone that will cause a SIGPIPE. We'll exit
+	// gracefully if that happens rather than segfault.
+	signal(SIGPIPE, SIG_IGN);
 	g_atomic_int_set(&shutdown, true);
 }
 
@@ -38,6 +43,8 @@ static bool register_signal_handlers( GError **err ) {
 	struct sigaction act;
 	memset(&act, 0, sizeof(act));
 	act.sa_handler = (void (*)( int )) shutdown_sigaction;
+	sigemptyset(&act.sa_mask);
+	sigaddset(&act.sa_mask, SIGPIPE);
 
 	static const int shutdown_signals[] = {
 		SIGHUP,
@@ -94,12 +101,6 @@ static GError *rails_sender_main( SenderControl *control ) {
 int main() {
 	GError *err = NULL;
 
-	// Ignore SIGPIPE. The return codes of writes will be checked.
-	if( signal(SIGPIPE, SIG_IGN) == SIG_ERR ) {
-		g_set_error_errno(&err);
-		goto out_signal_sigpipe;
-	}
-
 	Varnishlog *v = start_varnishlog(&err);
 	if( v == NULL ) goto out_start_varnishlog;
 	if( !register_signal_handlers(&err) ) goto out_register_signal_handlers;
@@ -136,6 +137,13 @@ int main() {
 		}
 	}
 
+	// This is just in case the call to ignore SIGPIPE in the signal handler
+	// failed as that call isn't checked.
+	if( signal(SIGPIPE, SIG_IGN) == SIG_ERR ) {
+		g_set_error_errno(&err);
+		goto out_signal_sigpipe;
+	}
+
 	g_atomic_int_set(&sender_control.shutdown, true);
 
 	err = g_thread_join(sender_control.thread);
@@ -153,6 +161,7 @@ int main() {
 
 out_read_varnishlog_entry:
 out_high_priority_thread:
+out_signal_sigpipe:
 	g_atomic_int_set(&sender_control.shutdown, true);
 	g_thread_join(sender_control.thread);
 
@@ -162,6 +171,5 @@ out_shutdown_varnishlog:
 out_register_signal_handlers:
 	shutdown_varnishlog(v, NULL, NULL);
 out_start_varnishlog:
-out_signal_sigpipe:
 	g_die(err);
 }

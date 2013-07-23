@@ -21,13 +21,12 @@
 
 #define SENDER_SLEEP_NS (50*1000)
 
-
-static volatile bool shutdown = false;
+static volatile gint shutdown = false;
 
 typedef struct SenderControl {
 	GThread *thread;
 	GSList *lines;
-	volatile bool shutdown;
+	volatile gint shutdown;
 } SenderControl;
 
 static void shutdown_sigaction() {

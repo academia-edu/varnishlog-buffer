@@ -100,7 +100,7 @@ out_high_priority_process:
 	g_assert(false); // l'impossible!
 }
 
-static volatile bool child_error_waiting = false;
+static volatile gint child_error_waiting = false;
 static int child_error_fd;
 
 // Be careful, this function is called in a signal handler context.

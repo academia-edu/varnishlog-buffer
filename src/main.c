@@ -64,7 +64,7 @@ static bool register_signal_handlers( GError **err ) {
 	return true;
 }
 
-static void send_log_entry_to_rails( GString *line, GError **err ) {
+static void print_log_entry( GString *line, GError **err ) {
 	g_assert(line != NULL);
 	if( err != NULL && *err != NULL ) return;
 
@@ -76,14 +76,14 @@ static void string_free( GString *str ) {
 	g_string_free(str, true);
 }
 
-static GError *rails_sender_main( SenderControl *control ) {
+static GError *sender_main( SenderControl *control ) {
 	while( true ) {
 		GSList *lines = (GSList *) g_atomic_pointer_and(&control->lines, 0);
 
 		lines = g_slist_reverse(lines);
 
 		GError *err = NULL;
-		g_slist_foreach(lines, (GFunc) send_log_entry_to_rails, &err);
+		g_slist_foreach(lines, (GFunc) print_log_entry, &err);
 		g_slist_free_full(lines, (GDestroyNotify) string_free);
 
 		if( err != NULL ) return err;
@@ -110,7 +110,7 @@ int main() {
 	};
 	// Note that sender_control.thread might not be initialized when
 	// the thread starts.
-	sender_control.thread = g_thread_new("Rails Sender", (GThreadFunc) rails_sender_main, &sender_control);
+	sender_control.thread = g_thread_new("Rails Sender", (GThreadFunc) sender_main, &sender_control);
 
 	if( !high_priority_thread(HIGH_THREAD_PRIORITY, &err) ) goto out_high_priority_thread;
 

@@ -4,8 +4,6 @@ DEPGEN := gcc
 
 PKG_CONFIG ?= pkg-config
 
--include config.mk
-
 SUBDIRS := include src
 
 CSCOPE_FILES := cscope.out cscope.po.out cscope.in.out
@@ -18,6 +16,7 @@ CPPFLAGS := $(CPPFLAGS) -ggdb -fno-omit-frame-pointer -O0 -fno-optimize-sibling-
 #CPPFLAGS := $(CPPFLAGS) -O3
 CFLAGS := $(CFLAGS) -fPIC -Wall -Wextra -Werror -ferror-limit=3 -Werror -std=gnu99 -pthread -fvisibility=hidden
 CXXFLAGS := $(CXXFLAGS) -std=gnu++11 -Wall -Wextra -ferror-limit=3 -Werror
+LDFLAGS := $(LDFLAGS) -lrt
 
 GTHREAD_CPPFLAGS ?= $(shell $(PKG_CONFIG) --cflags gthread-2.0)
 GTHREAD_LIBRARIES ?= $(shell $(PKG_CONFIG) --libs gthread-2.0)
@@ -26,6 +25,8 @@ GLIB_LIBRARIES ?= $(shell $(PKG_CONFIG) --libs glib-2.0)
 
 CPPFLAGS := $(CPPFLAGS) $(GLIB_CPPFLAGS) $(GTHREAD_CPPFLAGS)
 LIBRARIES := $(LIBRARIES) $(GLIB_LIBRARIES) $(GTHREAD_LIBRARIES)
+
+-include config.mk
 
 CLEAN_TARGETS := $(SUBDIRS:=/clean)
 DEPCLEAN_TARGETS := $(SUBDIRS:=/depclean)

@@ -1,5 +1,5 @@
-CC := clang
-CXX := clang++
+CC := cc
+CXX := c++
 DEPGEN := gcc
 
 PKG_CONFIG ?= pkg-config
@@ -14,8 +14,8 @@ SRCDIR := $(TOPDIR)/src
 
 CPPFLAGS := $(CPPFLAGS) -ggdb -fno-omit-frame-pointer -O0 -fno-optimize-sibling-calls
 #CPPFLAGS := $(CPPFLAGS) -O3
-CFLAGS := $(CFLAGS) -fPIC -Wall -Wextra -Werror -ferror-limit=3 -Werror -std=gnu99 -pthread -fvisibility=hidden
-CXXFLAGS := $(CXXFLAGS) -std=gnu++11 -Wall -Wextra -ferror-limit=3 -Werror
+CFLAGS := $(CFLAGS) -fPIC -Wall -Wextra -Werror -std=gnu99 -pthread -fvisibility=hidden
+CXXFLAGS := $(CXXFLAGS) -std=gnu++11 -Wall -Wextra -Werror
 LDFLAGS := $(LDFLAGS) -lrt
 
 GTHREAD_CPPFLAGS ?= $(shell $(PKG_CONFIG) --cflags gthread-2.0)

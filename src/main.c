@@ -8,6 +8,7 @@
 #include <time.h>
 #include <locale.h>
 
+#define GLIB_VERSION_MIN_REQUIRED GLIB_VERSION_2_32
 #include <glib.h>
 
 #include "common.h"

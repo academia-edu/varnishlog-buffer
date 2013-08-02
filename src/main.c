@@ -133,10 +133,11 @@ out_loop_error:
 
 static gint *new_lines_len_ptr( int fd, GError **error ) {
 	int mmap_flags = MAP_SHARED;
+	if( fd == -1 ) mmap_flags |= MAP_ANON;
 #ifdef __linux__
 	mmap_flags |= MAP_LOCKED;
 #endif
-	gint *lines_len = mmap(NULL, sizeof(gint) * 10, PROT_READ | PROT_WRITE, mmap_flags, fd, 0);
+	gint *lines_len = mmap(NULL, sizeof(gint), PROT_READ | PROT_WRITE, mmap_flags, fd, 0);
 	if( lines_len == MAP_FAILED ) {
 		g_set_error_errno(error);
 		return NULL;
@@ -145,7 +146,7 @@ static gint *new_lines_len_ptr( int fd, GError **error ) {
 }
 
 static bool free_lines_len_ptr( gint *lines_len, GError **error ) {
-	if( munmap(lines_len, sizeof(gint) * 10) == -1 ) {
+	if( munmap(lines_len, sizeof(gint)) == -1 ) {
 		g_set_error_errno(error);
 		return false;
 	}
@@ -286,7 +287,8 @@ int main( int argc, char *argv[] ) {
 	GError *err = NULL;
 	bool crash = true;
 
-	char *qlfn = "/dev/zero";
+	char *qlfn = NULL;
+	gint qlfd = -1;
 
 	GOptionEntry option_entries[] = {
 		{
@@ -310,38 +312,38 @@ int main( int argc, char *argv[] ) {
 		goto err_setup_option_error;
 	}
 
-	bool default_qlfn = strcmp(qlfn, "/dev/zero") == 0;
+	if( qlfn != NULL ) {
+		qlfd = open(qlfn, O_RDWR | O_CREAT | O_TRUNC, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH | S_IWOTH);
+		if( qlfd == -1 ) {
+			g_set_error_errno(&err);
+			goto err_setup_open_dev_zero;
+		}
 
-	gint qlfd = open(qlfn, O_RDWR | O_CREAT | O_TRUNC, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH | S_IWOTH);
-	if( qlfd == -1 ) {
-		g_set_error_errno(&err);
-		goto err_setup_open_dev_zero;
-	}
+		if( truncate(qlfn, sizeof(gint)) == -1 ) {
+			g_set_error_errno(&err);
+			goto err_setup_truncate_qlfn;
+		}
 
-	if( truncate(qlfn, sizeof(gint)) == -1 ) {
-		g_set_error_errno(&err);
-		goto err_setup_truncate_qlfn;
-	}
+		int flags = fcntl(qlfd, F_GETFD);
+		if( flags == -1 ) {
+			g_set_error_errno(&err);
+			goto err_setup_fcntl_qlfd_getfd;
+		}
 
-	int flags = fcntl(qlfd, F_GETFD);
-	if( flags == -1 ) {
-		g_set_error_errno(&err);
-		goto err_setup_fcntl_qlfd_getfd;
-	}
-
-	if( fcntl(qlfd, F_SETFD, flags | FD_CLOEXEC) == -1 ) {
-		g_set_error_errno(&err);
-		goto err_setup_fcntl_qlfd_setfd;
+		if( fcntl(qlfd, F_SETFD, flags | FD_CLOEXEC) == -1 ) {
+			g_set_error_errno(&err);
+			goto err_setup_fcntl_qlfd_setfd;
+		}
 	}
 
 	if( !reader_and_writer_main(qlfd, &err) ) goto err_reader_and_writer_main;
 
-	if( close(qlfd) == -1 ) {
-		g_set_error_errno(&err);
-		goto err_teardown_close_qlfd;
-	}
+	if( qlfn != NULL ) {
+		if( close(qlfd) == -1 ) {
+			g_set_error_errno(&err);
+			goto err_teardown_close_qlfd;
+		}
 
-	if( !default_qlfn ) {
 		if( unlink(qlfn) == -1 ) {
 			g_set_error_errno(&err);
 			goto err_teardown_unlink_qlfn;
@@ -358,12 +360,12 @@ err_reader_and_writer_main:
 err_setup_fcntl_qlfd_setfd:
 err_setup_fcntl_qlfd_getfd:
 err_setup_truncate_qlfn:
-	close(qlfd);
+	if( qlfn != NULL ) close(qlfd);
 err_teardown_close_qlfd:
-	if( !default_qlfn ) unlink(qlfn);
+	if( qlfn != NULL ) unlink(qlfn);
 err_teardown_unlink_qlfn:
 err_setup_open_dev_zero:
-	if( !default_qlfn ) g_free(qlfn);
+	if( qlfn != NULL ) g_free(qlfn);
 err_setup_option_error:
 	g_option_context_free(option_context);
 

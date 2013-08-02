@@ -363,7 +363,7 @@ err_teardown_close_qlfd:
 	if( !default_qlfn ) unlink(qlfn);
 err_teardown_unlink_qlfn:
 err_setup_open_dev_zero:
-	g_free(qlfn);
+	if( !default_qlfn ) g_free(qlfn);
 err_setup_option_error:
 	g_option_context_free(option_context);
 

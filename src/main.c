@@ -315,7 +315,7 @@ int main( int argc, char *argv[] ) {
 	}
 
 	if( qlfn != NULL ) {
-		qlfd = open(qlfn, O_RDWR | O_CREAT | O_TRUNC, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH | S_IWOTH);
+		qlfd = open(qlfn, O_RDWR | O_CREAT | O_TRUNC, S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
 		if( qlfd == -1 ) {
 			g_set_error_errno(&err);
 			goto err_setup_open_dev_zero;

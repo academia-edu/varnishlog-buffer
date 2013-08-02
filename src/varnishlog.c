@@ -66,7 +66,7 @@ bool shutdown_varnishlog( Varnishlog *v, int *stat, GError **err ) {
 }
 
 __attribute__((noreturn))
-static void start_varnishlog_child_noreturn( int pipes[2], int error_pipes[2], GIOChannel *error_out ) {
+static void start_varnishlog_child_noreturn( int pipes[2], int error_pipes[2], gboolean lowprio, GIOChannel *error_out ) {
 	GError *err = NULL;
 
 	if( close(error_pipes[0]) == -1 ) goto out_close_error_pipes_0;
@@ -76,7 +76,7 @@ static void start_varnishlog_child_noreturn( int pipes[2], int error_pipes[2], G
 	if( close(pipes[1]) == -1 ) goto out_close_pipes_1;
 
 	// The priority is arbitrarily chosen. Priorities range from 1 - 99. See chrt -m
-	if( !high_priority_process(10, &err) ) goto out_high_priority_process;
+	if( !lowprio && !high_priority_process(10, &err) ) goto out_high_priority_process;
 
 	char *argv[] = {
 		"varnishlog",
@@ -113,7 +113,7 @@ static void child_error_io_ready() {
 }
 
 // Note that only one Varnishlog may exist at a time.
-Varnishlog *start_varnishlog( GError **err ) {
+Varnishlog *start_varnishlog( gboolean lowprio, GError **err ) {
 	int pipes[2], error_pipes[2];
 	bool closed_pipes_1 = false, closed_error_pipes_1 = false;
 
@@ -162,7 +162,7 @@ Varnishlog *start_varnishlog( GError **err ) {
 		goto out_fork;
 	} else if( pid == 0 ) {
 		g_io_channel_unref(error_read);
-		start_varnishlog_child_noreturn(pipes, error_pipes, error_write);
+		start_varnishlog_child_noreturn(pipes, error_pipes, lowprio, error_write);
 	}
 
 	g_io_channel_unref(error_write);

@@ -153,8 +153,8 @@ static bool free_lines_len_ptr( gint *lines_len, GError **error ) {
 	return true;
 }
 
-static bool reader_and_writer_main( int lines_len_fd, GError **err ) {
-	Varnishlog *v = start_varnishlog(err);
+static bool reader_and_writer_main( int lines_len_fd, gboolean lowprio, GError **err ) {
+	Varnishlog *v = start_varnishlog(lowprio, err);
 	if( v == NULL ) goto err_setup_start_varnishlog;
 	if( !register_signal_handlers(err) ) goto err_setup_register_signal_handlers;
 
@@ -170,7 +170,7 @@ static bool reader_and_writer_main( int lines_len_fd, GError **err ) {
 	// the thread starts.
 	sender_control.thread = g_thread_new("Rails Sender", (GThreadFunc) sender_main, &sender_control);
 
-	if( !high_priority_thread(HIGH_THREAD_PRIORITY, err) ) goto err_setup_high_priority_thread;
+	if( !lowprio && !high_priority_thread(HIGH_THREAD_PRIORITY, err) ) goto err_setup_high_priority_thread;
 
 	while( !g_atomic_int_get(&shutdown) ) {
 		GError *_err = NULL;
@@ -289,6 +289,7 @@ int main( int argc, char *argv[] ) {
 
 	char *qlfn = NULL;
 	gint qlfd = -1;
+	gboolean lowprio = false;
 
 	GOptionEntry option_entries[] = {
 		{
@@ -301,6 +302,7 @@ int main( int argc, char *argv[] ) {
 			.arg_description = "(unbuffered|line|block)"
 		},
 		{ "queue-length-file", 'q', 0, G_OPTION_ARG_FILENAME, &qlfn, "Write queue length as binary data to file", "file" },
+		{ "low-priority", 'l', 0, G_OPTION_ARG_NONE, &lowprio, "Do not try to change to real-time priority", NULL },
 		{ NULL, 0, 0, 0, NULL, NULL, NULL }
 	};
 
@@ -336,7 +338,7 @@ int main( int argc, char *argv[] ) {
 		}
 	}
 
-	if( !reader_and_writer_main(qlfd, &err) ) goto err_reader_and_writer_main;
+	if( !reader_and_writer_main(qlfd, lowprio, &err) ) goto err_reader_and_writer_main;
 
 	if( qlfn != NULL ) {
 		if( close(qlfd) == -1 ) {

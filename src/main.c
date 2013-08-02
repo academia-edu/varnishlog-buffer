@@ -7,6 +7,7 @@
 #include <unistd.h>
 #include <time.h>
 #include <locale.h>
+#include <sys/time.h>
 
 #define GLIB_VERSION_MIN_REQUIRED GLIB_VERSION_2_32
 #include <glib.h>
@@ -93,10 +94,21 @@ static bool warn_if_too_long( GSList *lines, WarnOptions *warnopt, GError **erro
 	guint lines_len = g_slist_length(lines);
 	if( lines_len > warnopt->queue_size ) {
 		struct timespec now;
+#if defined(_POSIX_TIMERS) && _POSIX_TIMERS <= 0 || \
+    defined(_POSIX_MONOTONIC_CLOCK) && _POSIX_MONOTONIC_CLOCK <= 0
 		if( clock_gettime(CLOCK_MONOTONIC, &now) == -1 ) {
 			g_set_error_errno(error);
 			return false;
 		}
+#else
+		struct timeval tv;
+		if( gettimeofday(&tv, NULL) == -1 ) {
+			g_set_error_errno(error);
+			return false;
+		}
+		now.tv_sec = tv.tv_sec;
+		now.tv_nsec = tv.tv_usec * 1000;
+#endif
 		if( now.tv_sec - warnopt->last_warn.tv_sec > warnopt->frequency_sec ) {
 			if( fprintf(warnopt->out, "Queue length too large (%u > %u)\n", lines_len, warnopt->queue_size) < 0 ) {
 				g_set_error_errno(error);

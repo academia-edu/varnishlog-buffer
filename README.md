@@ -24,7 +24,8 @@ make
 
 ## Usage
 
-See `varnishlog-buffer -h`. Sorry, currently it must be run as root.
+See `varnishlog-buffer --help`.
+It must be run as root unless run with the `--low-priorty` option.
 
 [varnishlog]: https://www.varnish-cache.org/docs/3.0/reference/varnishlog.html
 [avl]: https://github.com/academia-edu/academia-varnishlog

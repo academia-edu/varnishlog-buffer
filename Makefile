@@ -12,11 +12,13 @@ TOPDIR := $(PWD)
 INCDIR := $(TOPDIR)/include
 SRCDIR := $(TOPDIR)/src
 
-CPPFLAGS := $(CPPFLAGS) -ggdb -fno-omit-frame-pointer -O0 -fno-optimize-sibling-calls
-#CPPFLAGS := $(CPPFLAGS) -O3
-CFLAGS := $(CFLAGS) -fPIC -Wall -Wextra -Werror -std=gnu99 -pthread -fvisibility=hidden
-CXXFLAGS := $(CXXFLAGS) -std=gnu++11 -Wall -Wextra -Werror
-LDFLAGS := $(LDFLAGS) -lrt
+CPPFLAGS := $(CPPFLAGS) -O3
+CFLAGS := $(CFLAGS) -fPIC -Wall -Wextra -std=gnu99 -pthread -fvisibility=hidden
+CXXFLAGS := $(CXXFLAGS) -std=gnu++11 -Wall -Wextra
+
+ifneq ($(shell uname), Darwin)
+ LDFLAGS := $(LDFLAGS) -lrt
+endif
 
 GTHREAD_CPPFLAGS ?= $(shell $(PKG_CONFIG) --cflags gthread-2.0)
 GTHREAD_LIBRARIES ?= $(shell $(PKG_CONFIG) --libs gthread-2.0)

@@ -77,7 +77,11 @@ GError *read_gerror( GIOChannel *channel, GError **err ) {
 	gchar *domain;
 	status = g_io_channel_read_line(channel, &domain, NULL, NULL, err);
 	g_assert(status != G_IO_STATUS_AGAIN);
-	if( status != G_IO_STATUS_NORMAL ) goto out_read_domain;
+	if( status == G_IO_STATUS_EOF ) {
+		return NULL;
+	} else if( status != G_IO_STATUS_NORMAL ) {
+		goto out_read_domain;
+	}
 	GQuark domain_quark = g_quark_from_string(domain);
 	g_free(domain);
 

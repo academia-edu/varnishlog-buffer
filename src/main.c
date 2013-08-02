@@ -94,8 +94,8 @@ static bool warn_if_too_long( GSList *lines, WarnOptions *warnopt, GError **erro
 	guint lines_len = g_slist_length(lines);
 	if( lines_len > warnopt->queue_size ) {
 		struct timespec now;
-#if defined(_POSIX_TIMERS) && _POSIX_TIMERS <= 0 || \
-    defined(_POSIX_MONOTONIC_CLOCK) && _POSIX_MONOTONIC_CLOCK <= 0
+#if defined(_POSIX_TIMERS) && _POSIX_TIMERS > 0 || \
+    defined(_POSIX_MONOTONIC_CLOCK) && _POSIX_MONOTONIC_CLOCK > 0
 		if( clock_gettime(CLOCK_MONOTONIC, &now) == -1 ) {
 			g_set_error_errno(error);
 			return false;

@@ -3,7 +3,6 @@
 
 typedef enum VarnishlogBufferError {
 	VARNISHLOG_BUFFER_ERROR_EOF,
-	VARNISHLOG_BUFFER_ERROR_QUEUE_SIZE,
 	VARNISHLOG_BUFFER_ERROR_UNSPEC
 } VarnishlogBufferError;
 

@@ -5,9 +5,12 @@
 #include <stdbool.h>
 #include <errno.h>
 #include <unistd.h>
-#include <time.h>
 #include <locale.h>
 #include <sys/time.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <sys/mman.h>
+#include <fcntl.h>
 
 #define GLIB_VERSION_MIN_REQUIRED GLIB_VERSION_2_32
 #include <glib.h>
@@ -27,20 +30,11 @@
 
 static volatile gint shutdown = false;
 
-typedef struct WarnOptions {
-	FILE *out;
-	bool close_out;
-	guint queue_size;
-	time_t frequency_sec;
-	struct timespec last_warn;
-} WarnOptions;
-G_STATIC_ASSERT(sizeof(time_t) >= sizeof(gint));
-
 typedef struct SenderControl {
 	GThread *thread;
 	GSList *lines;
 	volatile gint shutdown;
-	WarnOptions *warnopt;
+	volatile gint *lines_len;
 } SenderControl;
 
 static void shutdown_sigaction() {
@@ -78,70 +72,53 @@ static bool register_signal_handlers( GError **err ) {
 	return true;
 }
 
-static void print_log_entry( GString *line, GError **err ) {
+typedef struct PrintLogEntryContext {
+	GError **error;
+	volatile gint *lines_len;
+} PrintLogEntryContext;
+
+static void print_log_entry( GString *line, PrintLogEntryContext *ctx ) {
 	g_assert(line != NULL);
-	if( err != NULL && *err != NULL ) return;
+	if( ctx->error != NULL && *ctx->error != NULL ) return;
 
 	if( printf("%s\n", line->str) < 0 )
-		g_set_error_errno(err);
+		g_set_error_errno(ctx->error);
+
+	g_atomic_int_dec_and_test(ctx->lines_len);
 }
 
 static void string_free( GString *str ) {
 	g_string_free(str, true);
 }
 
-static bool warn_if_too_long( GSList *lines, WarnOptions *warnopt, GError **error ) {
-	guint lines_len = g_slist_length(lines);
-	if( lines_len > warnopt->queue_size ) {
-		struct timespec now;
-#if defined(_POSIX_TIMERS) && _POSIX_TIMERS > 0 || \
-    defined(_POSIX_MONOTONIC_CLOCK) && _POSIX_MONOTONIC_CLOCK > 0
-		if( clock_gettime(CLOCK_MONOTONIC, &now) == -1 ) {
-			g_set_error_errno(error);
-			return false;
-		}
-#else
-		struct timeval tv;
-		if( gettimeofday(&tv, NULL) == -1 ) {
-			g_set_error_errno(error);
-			return false;
-		}
-		now.tv_sec = tv.tv_sec;
-		now.tv_nsec = tv.tv_usec * 1000;
-#endif
-		if( now.tv_sec - warnopt->last_warn.tv_sec > warnopt->frequency_sec ) {
-			if( fprintf(warnopt->out, "Queue length too large (%u > %u)\n", lines_len, warnopt->queue_size) < 0 ) {
-				g_set_error_errno(error);
-				return false;
-			}
-			warnopt->last_warn = now;
-		}
-	}
-	return true;
-}
-
 static GError *sender_main( SenderControl *control ) {
 	GError *err = NULL;
+
+	PrintLogEntryContext plec = {
+		.error = &err,
+		.lines_len = control->lines_len
+	};
 
 	while( true ) {
 		GSList *lines = (GSList *) g_atomic_pointer_and(&control->lines, 0);
 		lines = g_slist_reverse(lines);
 
-		if( !warn_if_too_long(lines, control->warnopt, &err) ) goto out_warn_if_too_long;
-
-		g_slist_foreach(lines, (GFunc) print_log_entry, &err);
+		g_slist_foreach(lines, (GFunc) print_log_entry, &plec);
 		if( err != NULL ) goto out_print_log_entry;
 		g_slist_free_full(lines, (GDestroyNotify) string_free);
 
-		if( g_atomic_int_get(&control->shutdown) && g_atomic_pointer_get(&control->lines) == NULL )
-			break;
+		if( g_atomic_int_get(&control->shutdown) ) {
+			if( g_atomic_pointer_get(&control->lines) == NULL ) {
+				break;
+			} else {
+				continue;
+			}
+		}
 
 		usleep(SENDER_SLEEP_NS);
 
 		continue;
 
-out_warn_if_too_long:
-		g_slist_foreach(lines, (GFunc) print_log_entry, NULL);
 out_print_log_entry:
 		g_slist_free_full(lines, (GDestroyNotify) string_free);
 
@@ -154,21 +131,45 @@ out_loop_error:
 	return err;
 }
 
-bool reader_and_writer_main( WarnOptions *warnopt, GError **err ) {
+static gint *new_lines_len_ptr( int fd, GError **error ) {
+	int mmap_flags = MAP_SHARED;
+#ifdef __linux__
+	mmap_flags |= MAP_LOCKED;
+#endif
+	gint *lines_len = mmap(NULL, sizeof(gint) * 10, PROT_READ | PROT_WRITE, mmap_flags, fd, 0);
+	if( lines_len == MAP_FAILED ) {
+		g_set_error_errno(error);
+		return NULL;
+	}
+	return lines_len;
+}
+
+static bool free_lines_len_ptr( gint *lines_len, GError **error ) {
+	if( munmap(lines_len, sizeof(gint) * 10) == -1 ) {
+		g_set_error_errno(error);
+		return false;
+	}
+	return true;
+}
+
+static bool reader_and_writer_main( int lines_len_fd, GError **err ) {
 	Varnishlog *v = start_varnishlog(err);
-	if( v == NULL ) goto out_start_varnishlog;
-	if( !register_signal_handlers(err) ) goto out_register_signal_handlers;
+	if( v == NULL ) goto err_setup_start_varnishlog;
+	if( !register_signal_handlers(err) ) goto err_setup_register_signal_handlers;
+
+	volatile gint *lines_len = new_lines_len_ptr(lines_len_fd, err);
+	if( lines_len == NULL ) goto err_setup_new_lines_len_ptr;
 
 	SenderControl sender_control = {
 		.lines = NULL,
 		.shutdown = false,
-		.warnopt = warnopt
+		.lines_len = lines_len
 	};
 	// Note that sender_control.thread might not be initialized when
 	// the thread starts.
 	sender_control.thread = g_thread_new("Rails Sender", (GThreadFunc) sender_main, &sender_control);
 
-	if( !high_priority_thread(HIGH_THREAD_PRIORITY, err) ) goto out_high_priority_thread;
+	if( !high_priority_thread(HIGH_THREAD_PRIORITY, err) ) goto err_setup_high_priority_thread;
 
 	while( !g_atomic_int_get(&shutdown) ) {
 		GError *_err = NULL;
@@ -177,6 +178,13 @@ bool reader_and_writer_main( WarnOptions *warnopt, GError **err ) {
 		if( line != NULL ) {
 			GSList *lines = (GSList *) g_atomic_pointer_and(&sender_control.lines, 0);
 			lines = g_slist_prepend(lines, line);
+
+			int _lines_len = g_atomic_int_get(lines_len);
+			// We'll probably run out of memory long before this is a problem, but just in case...
+			g_assert_cmpint(_lines_len, <, G_MAXINT);
+			g_assert_cmpint(_lines_len, >=, 0);
+			g_atomic_int_inc(lines_len);
+
 			g_atomic_pointer_set(&sender_control.lines, lines);
 		}
 
@@ -190,7 +198,7 @@ bool reader_and_writer_main( WarnOptions *warnopt, GError **err ) {
 				continue;
 			}
 			g_propagate_error(err, _err);
-			goto out_read_varnishlog_entry;
+			goto err_read_varnishlog_entry;
 		}
 	}
 
@@ -198,7 +206,7 @@ bool reader_and_writer_main( WarnOptions *warnopt, GError **err ) {
 	// failed as that call isn't checked.
 	if( signal(SIGPIPE, SIG_IGN) == SIG_ERR ) {
 		g_set_error_errno(err);
-		goto out_signal_sigpipe;
+		goto err_teardown_signal_sigpipe;
 	}
 
 	g_atomic_int_set(&sender_control.shutdown, true);
@@ -206,31 +214,38 @@ bool reader_and_writer_main( WarnOptions *warnopt, GError **err ) {
 	GError *_err = g_thread_join(sender_control.thread);
 	if( _err != NULL ) {
 		g_propagate_error(err, _err);
-		goto out_g_thread_join;
+		goto err_teardown_g_thread_join;
 	}
 
 	g_assert_cmpuint(g_slist_length(sender_control.lines), ==, 0);
+	g_assert_cmpuint(g_atomic_int_get(lines_len), ==, 0);
+
+	if( !free_lines_len_ptr((gint *) lines_len, err) ) goto err_teardown_free_lines_len_ptr;
 
 	int stat;
-	if( !shutdown_varnishlog(v, &stat, err) ) goto out_shutdown_varnishlog;
+	if( !shutdown_varnishlog(v, &stat, err) ) goto err_teardown_shutdown_varnishlog;
 
 	if( !WIFSIGNALED(stat) || WTERMSIG(stat) != SIGINT )
 		return stat;
 
 	return true;
 
-out_read_varnishlog_entry:
-out_high_priority_thread:
-out_signal_sigpipe:
+err_read_varnishlog_entry:
+err_setup_high_priority_thread:
+err_teardown_signal_sigpipe:
 	g_atomic_int_set(&sender_control.shutdown, true);
 	g_thread_join(sender_control.thread);
 
 	g_assert_cmpuint(g_slist_length(sender_control.lines), ==, 0);
-out_g_thread_join:
-out_shutdown_varnishlog:
-out_register_signal_handlers:
+	g_assert_cmpuint(g_atomic_int_get(lines_len), ==, 0);
+err_teardown_g_thread_join:
+	free_lines_len_ptr((gint *) lines_len, NULL);
+err_teardown_free_lines_len_ptr:
+err_setup_new_lines_len_ptr:
+err_setup_register_signal_handlers:
 	shutdown_varnishlog(v, NULL, NULL);
-out_start_varnishlog:
+err_teardown_shutdown_varnishlog:
+err_setup_start_varnishlog:
 	return false;
 }
 
@@ -242,7 +257,7 @@ static bool set_stream_buffering( FILE *stream, int mode, GError **err ) {
 	return true;
 }
 
-gboolean set_buffer_mode( const gchar *option_name, const gchar *value, gpointer data, GError **err ) {
+static gboolean set_buffer_mode( const gchar *option_name, const gchar *value, gpointer data, GError **err ) {
 	(void) data, (void) option_name;
 
 	int mode = _IOFBF;
@@ -271,12 +286,7 @@ int main( int argc, char *argv[] ) {
 	GError *err = NULL;
 	bool crash = true;
 
-	gint warn_fd = 2;
-	gint queue_size = 1000;
-	gchar *warn_filename = NULL;
-	WarnOptions warnopt;
-	memset(&warnopt, 0, sizeof(warnopt));
-	warnopt.frequency_sec = 5 * 60; // 5 minutes
+	char *qlfn = "/dev/zero";
 
 	GOptionEntry option_entries[] = {
 		{
@@ -288,10 +298,7 @@ int main( int argc, char *argv[] ) {
 			.description = "Set the output buffering mode",
 			.arg_description = "(unbuffered|line|block)"
 		},
-		{ "queue-warn-size", 's', 0, G_OPTION_ARG_INT, &queue_size, "Warn if queue grows above this size", "size" },
-		{ "warn-fd", 'w', 0, G_OPTION_ARG_INT, &warn_fd, "Write warnings to fd", "fd" },
-		{ "warn-file", 'o', 0, G_OPTION_ARG_FILENAME, &warn_filename, "Write warnings to file", "file" },
-		{ "warn-frequency-sec", 'f', 0, G_OPTION_ARG_INT, &warnopt.frequency_sec, "Write warning every N seconds", "N" },
+		{ "queue-length-file", 'q', 0, G_OPTION_ARG_FILENAME, &qlfn, "Write queue length as binary data to file", "file" },
 		{ NULL, 0, 0, 0, NULL, NULL, NULL }
 	};
 
@@ -300,68 +307,64 @@ int main( int argc, char *argv[] ) {
 
 	if( !g_option_context_parse(option_context, &argc, &argv, &err) ) {
 		crash = false;
-		goto out_option_error;
+		goto err_setup_option_error;
 	}
 
-	if( queue_size < 0 ) {
-		g_set_error_literal(
-			&err,
-			VARNISHLOG_BUFFER_QUARK,
-			VARNISHLOG_BUFFER_ERROR_QUEUE_SIZE,
-			"Cannot have a negative queue warn size"
-		);
-		crash = false;
-		goto out_queue_size_lt_0;
-	}
-	warnopt.queue_size = queue_size;
+	bool default_qlfn = strcmp(qlfn, "/dev/zero") == 0;
 
-	if( warn_filename != NULL ) {
-		warnopt.close_out = true;
-		if( (warnopt.out = fopen(warn_filename, "a")) == NULL ) {
+	gint qlfd = open(qlfn, O_RDWR | O_CREAT | O_TRUNC, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH | S_IWOTH);
+	if( qlfd == -1 ) {
+		g_set_error_errno(&err);
+		goto err_setup_open_dev_zero;
+	}
+
+	if( truncate(qlfn, sizeof(gint)) == -1 ) {
+		g_set_error_errno(&err);
+		goto err_setup_truncate_qlfn;
+	}
+
+	int flags = fcntl(qlfd, F_GETFD);
+	if( flags == -1 ) {
+		g_set_error_errno(&err);
+		goto err_setup_fcntl_qlfd_getfd;
+	}
+
+	if( fcntl(qlfd, F_SETFD, flags | FD_CLOEXEC) == -1 ) {
+		g_set_error_errno(&err);
+		goto err_setup_fcntl_qlfd_setfd;
+	}
+
+	if( !reader_and_writer_main(qlfd, &err) ) goto err_reader_and_writer_main;
+
+	if( close(qlfd) == -1 ) {
+		g_set_error_errno(&err);
+		goto err_teardown_close_qlfd;
+	}
+
+	if( !default_qlfn ) {
+		if( unlink(qlfn) == -1 ) {
 			g_set_error_errno(&err);
-			goto out_fopen;
+			goto err_teardown_unlink_qlfn;
 		}
-	} else {
-		if( warn_fd == 1 ) {
-			warnopt.out = stdout;
-			warnopt.close_out = false;
-		} else if( warn_fd == 2 ) {
-			warnopt.out = stderr;
-			warnopt.close_out = false;
-		} else {
-			warnopt.close_out = true;
-			if( (warnopt.out = fdopen(warn_fd, "a")) == NULL ) {
-				g_set_error_errno(&err);
-				goto out_fdopen;
-			}
-		}
+
+		g_free(qlfn);
 	}
 
-	if( !set_stream_buffering(warnopt.out, _IOLBF, &err) ) goto out_set_stream_buffering;
-
-	if( !reader_and_writer_main(&warnopt, &err) ) goto out_reader_and_writer_main;
-
-	if( warnopt.close_out ) {
-		if( fclose(warnopt.out) == EOF ) {
-			g_set_error_errno(&err);
-			goto out_fclose;
-		}
-	}
-
-	if( warn_filename != NULL ) g_free(warn_filename);
 	g_option_context_free(option_context);
 
 	return EXIT_SUCCESS;
 
-out_fclose:
-out_reader_and_writer_main:
-out_set_stream_buffering:
-	if( warnopt.close_out ) fclose(warnopt.out);
-out_fdopen:
-out_fopen:
-out_queue_size_lt_0:
-out_option_error:
-	if( warn_filename != NULL ) g_free(warn_filename);
+err_reader_and_writer_main:
+err_setup_fcntl_qlfd_setfd:
+err_setup_fcntl_qlfd_getfd:
+err_setup_truncate_qlfn:
+	close(qlfd);
+err_teardown_close_qlfd:
+	if( !default_qlfn ) unlink(qlfn);
+err_teardown_unlink_qlfn:
+err_setup_open_dev_zero:
+	g_free(qlfn);
+err_setup_option_error:
 	g_option_context_free(option_context);
 
 	if( crash ) {

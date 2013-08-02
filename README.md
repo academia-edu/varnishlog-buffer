@@ -18,6 +18,10 @@ with them at it's leisure.
 make
 ```
 
+### Dependencies
+
+* [glib][glib] >= 2.32
+
 ## Usage
 
 See `varnishlog-buffer -h`. Sorry, currently it must be run as root.
@@ -25,5 +29,6 @@ See `varnishlog-buffer -h`. Sorry, currently it must be run as root.
 [varnishlog]: https://www.varnish-cache.org/docs/3.0/reference/varnishlog.html
 [avl]: https://github.com/academia-edu/academia-varnishlog
 [vsm]: https://www.varnish-cache.org/docs/trunk/reference/vsm.html
+[glib]: https://developer.gnome.org/glib/stable/
 
 <!--- vim: set tw=80: -->

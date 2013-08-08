@@ -2,11 +2,14 @@ CC := cc
 CXX := c++
 DEPGEN := gcc
 
+INSTALL ?= install
 PKG_CONFIG ?= pkg-config
 
 SUBDIRS := include src
 
 CSCOPE_FILES := cscope.out cscope.po.out cscope.in.out
+
+prefix := $(DESTDIR)/usr/local
 
 TOPDIR := $(PWD)
 INCDIR := $(TOPDIR)/include
@@ -33,14 +36,16 @@ LIBRARIES := $(LIBRARIES) $(GLIB_LIBRARIES) $(GTHREAD_LIBRARIES)
 CLEAN_TARGETS := $(SUBDIRS:=/clean)
 DEPCLEAN_TARGETS := $(SUBDIRS:=/depclean)
 ALL_TARGETS := $(SUBDIRS:=/all)
+INSTALL_TARGETS := $(SUBDIRS:=/install)
 
-.PHONY: all clean depclean cscope pristine cscope-clean
+.PHONY: all clean depclean cscope pristine cscope-clean install
 .DEFAULT_GOAL: all
 
 all: $(ALL_TARGETS)
 clean: $(CLEAN_TARGETS)
 depclean: clean $(DEPCLEAN_TARGETS)
 pristine: depclean cscope-clean
+install: $(INSTALL_TARGETS)
 
 cscope-clean:
 	$(RM) $(CSCOPE_FILES)
@@ -52,6 +57,7 @@ cscope:
 $(CLEAN_TARGETS):
 $(DEPCLEAN_TARGETS):
 $(ALL_TARGETS):
+$(INSTALL_TARGETS):
 
 define variableRule
  CURDIR := $$(TOPDIR)/$$$(1)
@@ -65,6 +71,7 @@ $(foreach subdir, $(SUBDIRS), $(eval $(call variableRule, $(subdir))))
 define subdirRule
  CURDIR := $$(TOPDIR)/$$$(1)
  $$$(1)/all: CURDIR := $$(CURDIR)
+ $$$(1)/install: CURDIR := $$(CURDIR)
  $$$(1)/clean: CURDIR := $$(CURDIR)
  $$$(1)/depclean: CURDIR := $$(CURDIR)
  include $$(CURDIR)/Makefile

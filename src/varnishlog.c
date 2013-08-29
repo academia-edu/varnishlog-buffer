@@ -77,7 +77,7 @@ static void start_varnishlog_child_noreturn( int pipes[2], gboolean lowprio, GIO
 
 	char *argv[] = {
 		"varnishlog",
-		"-cOu",
+		"-Ou",
 		NULL
 	};
 

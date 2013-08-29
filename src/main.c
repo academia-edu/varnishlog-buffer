@@ -180,10 +180,9 @@ static bool reader_and_writer_main( int lines_len_fd, gboolean lowprio, GError *
 			GSList *lines = (GSList *) g_atomic_pointer_and(&sender_control.lines, 0);
 			lines = g_slist_prepend(lines, line);
 
-			int _lines_len = g_atomic_int_get(lines_len);
 			// We'll probably run out of memory long before this is a problem, but just in case...
-			g_assert_cmpint(_lines_len, <, G_MAXINT);
-			g_assert_cmpint(_lines_len, >=, 0);
+			g_assert_cmpint(g_atomic_int_get(lines_len), <, G_MAXINT);
+			g_assert_cmpint(g_atomic_int_get(lines_len), >=, 0);
 			g_atomic_int_inc(lines_len);
 
 			g_atomic_pointer_set(&sender_control.lines, lines);

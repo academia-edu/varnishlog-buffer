@@ -185,17 +185,17 @@ static bool reader_and_writer_main( const VarnishlogBufferOptions *options, GErr
 			if( options->max_queue_size != 0 && g_atomic_int_get(lines_len) == options->max_queue_size ) {
 				g_string_free(line, true);
 				continue;
+			} else {
+				GSList *lines = (GSList *) g_atomic_pointer_and(&sender_control.lines, 0);
+				lines = g_slist_prepend(lines, line);
+
+				// We'll probably run out of memory long before this is a problem, but just in case...
+				g_assert_cmpint(g_atomic_int_get(lines_len), <, G_MAXINT);
+				g_assert_cmpint(g_atomic_int_get(lines_len), >=, 0);
+				g_atomic_int_inc(lines_len);
+
+				g_atomic_pointer_set(&sender_control.lines, lines);
 			}
-
-			GSList *lines = (GSList *) g_atomic_pointer_and(&sender_control.lines, 0);
-			lines = g_slist_prepend(lines, line);
-
-			// We'll probably run out of memory long before this is a problem, but just in case...
-			g_assert_cmpint(g_atomic_int_get(lines_len), <, G_MAXINT);
-			g_assert_cmpint(g_atomic_int_get(lines_len), >=, 0);
-			g_atomic_int_inc(lines_len);
-
-			g_atomic_pointer_set(&sender_control.lines, lines);
 		}
 
 		if( _err != NULL ) {

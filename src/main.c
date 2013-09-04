@@ -182,7 +182,7 @@ static bool reader_and_writer_main( const VarnishlogBufferOptions *options, GErr
 		GString *line = read_varnishlog_entry(v, &_err);
 
 		if( line != NULL ) {
-			if( g_atomic_int_get(lines_len) == options->max_queue_size ) {
+			if( options->max_queue_size != 0 && g_atomic_int_get(lines_len) == options->max_queue_size ) {
 				g_string_free(line, true);
 				continue;
 			}

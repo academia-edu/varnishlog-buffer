@@ -72,6 +72,7 @@ define subdirRule
  CURDIR := $$(TOPDIR)/$$$(1)
  $$$(1)/all: CURDIR := $$(CURDIR)
  $$$(1)/install: CURDIR := $$(CURDIR)
+ $$$(1)/install: $$$(1)/all
  $$$(1)/clean: CURDIR := $$(CURDIR)
  $$$(1)/depclean: CURDIR := $$(CURDIR)
  include $$(CURDIR)/Makefile

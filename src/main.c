@@ -293,6 +293,10 @@ static gboolean set_buffer_mode( const gchar *option_name, const gchar *value, g
 int main( int argc, char *argv[] ) {
 	setlocale(LC_ALL, "");
 
+	bool memory_profile = (getenv("VARNISHLOG_MEMORY_PROFILE") != NULL);
+	if( memory_profile )
+		g_mem_set_vtable(glib_mem_profiler_table);
+
 	GError *err = NULL;
 	bool crash = true;
 
@@ -371,6 +375,9 @@ int main( int argc, char *argv[] ) {
 	}
 
 	g_option_context_free(option_context);
+
+	if( memory_profile )
+		g_mem_profile();
 
 	return EXIT_SUCCESS;
 
